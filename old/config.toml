@@ -1,0 +1,9 @@
+# config.toml
+
+# directory目录下非深度搜索文件夹
+directory = "C:\\Users\\barab\\Documents\\Tencent Files\\764715775\\DFPT"
+
+# structure结构类型，影响拟合公式
+structure="FCC"
+
+
