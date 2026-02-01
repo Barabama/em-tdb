@@ -176,7 +176,6 @@ class ThermoDBI:
         sql = f"INSERT INTO {table} ({columns}) VALUES ({holders})"
 
         self.cursor.execute(sql, tuple([v for v in data.values()]))
-        self.conn.commit()
 
     def _create_many(self, table: str, data_list: Sequence[AllData]):
         """Create many records in the specified table."""
@@ -190,7 +189,6 @@ class ThermoDBI:
         values = [tuple([v for v in d.values()]) for d in data_list]
 
         self.cursor.executemany(sql, values)
-        self.conn.commit()
 
     def _read(self, table: str, queries: dict[str, Any], use_like: bool = False) -> list[dict]:
         """Read records from the specified table."""
@@ -455,6 +453,7 @@ class ThermoDBI:
         """
         data = Tdb(tdb=tdb, description=description, version=version)
         self._create("tdbs", data)
+        self.conn.commit()
 
     def read_tdb(self, tdb: str = "", use_like: bool = False, **kwargs) -> list[Tdb]:
         """Read tdb record.
@@ -535,6 +534,7 @@ class ThermoDBI:
             data_list: List of phase records.
         """
         self._create_many("phases", deepcopy(data_list))
+        self.conn.commit()
 
     def read_phase(
         self,
@@ -590,13 +590,18 @@ class ThermoDBI:
         )
         return self.read_phase(phase)
 
-    def delete_phase(self, phase: str, tdb: str, **kwargs):
+    def delete_phase(self, phase: str, tdb: str, cascade: bool = False, **kwargs):
         """Delete phase record.
 
         Args:
             phase: Phase name.
             tdb: TDB name.
+            cascade: Whether to delete all parameters associated with the phase.
         """
+        if cascade:
+            params = self.read_parameter(phase=phase, tdb=tdb)
+            for param in params:
+                self.delete_parameter(param["param"], tdb)
         self._delete("phases", {"phase": phase, "tdb": tdb})
 
     # Parameters CRUD

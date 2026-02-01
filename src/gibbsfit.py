@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 class QhaData(TypedDict):
     name: str
+    state: str
     structure: dict[str, Any]
     bulk_modulus_dft_GPa: float  # DFT E0 GPa
     volume_EOS: float  # EOS
@@ -41,9 +42,8 @@ class QhaData(TypedDict):
     helmholtz_v_t: list[list[float]]  # A(V,T)
 
 
-# # 原来的E-V.dat, 即DFT静态能量E0(V), 近似于freeneryies_v_t[0]
-# freenergies_t0 = freenergies_v_t[0]
-# # 或从store取"store_inputs eos deformation *" output["output"]["energy"]
+# 原来的E-V.dat, 即DFT静态能量E0(V), 近似于 energy_kJ_mol_t[0]
+# 或从store取"store_inputs eos deformation *" output["output"]["energy"]
 
 
 class FitResult(TypedDict):
@@ -208,14 +208,16 @@ class GTFitter:
             raise FileNotFoundError(f"gibbs-temperature.dat not found in {folder}")
         file = files[0]
         name = folder.name
-        phase, elem1, elem2 = name.split("-")
-
-        elems = [elem1, elem2]
+        parts = name.split("-")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid name format: {name}")
+        phase = parts[0]
         if phase not in self.phase_metrics:
             raise ValueError(f"{phase} not valid in phase_metrics")
         metrics = self.phase_metrics[phase]
         m_sum = sum(m for m in metrics)
         metrics = [m / m_sum for m in metrics]
+        elems = parts[1:1+len(metrics)]
 
         if match := re.search(r"\-(\d+)(?:atoms?)?", name):
             atom_num = int(match.group(1))
@@ -226,31 +228,38 @@ class GTFitter:
 
         return self._gen_fit_results(gt_data, name, phase, elems, metrics)
 
-    def handle_json(self, json_path: Path | str) -> list[FitResult]:
-        """Handle the atomate QHA Flow json file.
+    def handle_json(self, folder: Path | str) -> list[FitResult]:
+        """Handle the atomate QHA Flow json file in the folder.
 
         Args:
-            json_path: Path to the atomate QHA Flow json file.
+            folder: Path to the folder containing the atomate QHA Flow json file.
         Returns:
             list: List of FitResult objects.
         """
-        json_path = Path(json_path) if isinstance(json_path, str) else json_path
+        folder = Path(folder) if isinstance(folder, str) else folder
+        files = glob.glob(str(folder.joinpath("*.json")), recursive=False)
+        if len(files) <= 0:
+            raise FileNotFoundError(f"*.json not found in {folder}")
+        json_path = Path(files[0])
+
         if not json_path.exists():
             raise FileNotFoundError(f"{json_path} does not exist")
         with open(json_path, "r", encoding="utf-8") as jf:
             qha_data = QhaData(**json.load(jf))
-        if qha_data.get("status", "failed") == "failed":
+        if qha_data.get("state", "failed") == "failed":
             raise ValueError(f"{json_path} is failed")
 
-        name = qha_data["name"]
-        phase, elem1, elem2 = name.split("-")
-
-        elems = [elem1, elem2]
+        name = folder.name
+        parts = name.split("-")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid name format: {name}")
+        phase = parts[0]
         if phase not in self.phase_metrics:
             raise ValueError(f"Invalid phase: {phase}")
         metrics = self.phase_metrics[phase]
         m_sum = sum(m for m in metrics)
         metrics = [m / m_sum for m in metrics]
+        elems = parts[1:1+len(metrics)]
 
         struct = dict(qha_data["structure"])
         atoms = struct.get("sites", [])

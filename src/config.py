@@ -2,7 +2,7 @@
 
 VERSION = "0.4.0"
 
-DB_CHOICES = ["eleme", "func", "phase", "param", "tdb"]
+DB_CHOICES = ["elem", "func", "phase", "param", "tdb"]
 
 PHASE_METRICS = {
             "SER": (1,),  # SER is pure

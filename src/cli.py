@@ -24,7 +24,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
     try:
         tdb_mgr = TDBManager(ThermoDBI(":memory:"))
         parsed = tdb_mgr.parse_tdb(tdb_file, tdb_name)
-        result = json.dumps(parsed, indent=2) if output == "json" else repr(parsed)
+        result = json.dumps(parsed.to_dict(), indent=2) if output == "json" else repr(parsed)
         log.info(result)
         return 0
     except Exception as e:
@@ -50,7 +50,7 @@ def cmd_import(args: argparse.Namespace) -> int:
             tdb_mgr.save_functions(parsed.funcs)
             log.info(f"Imported {len(parsed.funcs)} functions")
         else:
-            tdb_mgr.import_tdb(parsed.phases, parsed.params, desc, ver)
+            tdb_mgr.import_tdb(parsed.phases, parsed.params, parsed.tdb, desc, ver)
             log.info(f"Imported TDB '{tdb_name}' with phases and parameters")
         return 0
     except Exception as e:
@@ -371,27 +371,27 @@ def create_parser() -> argparse.ArgumentParser:
         default=False,
         help="Delete dependent entries",
     )
-    p_list.add_argument(
+    p_delete.add_argument(
         "--elem",
         default="",
         help="Filter by element for elements and functions",
     )
-    p_list.add_argument(
+    p_delete.add_argument(
         "--func",
         default="",
         help="Filter by function for functions",
     )
-    p_list.add_argument(
+    p_delete.add_argument(
         "--phase",
         default="",
         help="Filter by phase for phases and parameters",
     )
-    p_list.add_argument(
+    p_delete.add_argument(
         "--param",
         default="",
         help="Filter by parameter for parameters",
     )
-    p_list.add_argument(
+    p_delete.add_argument(
         "--tdb",
         default="",
         help="Filter by tdb for tdbs, phases and parameters",
