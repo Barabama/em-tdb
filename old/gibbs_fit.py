@@ -1,22 +1,22 @@
 # gibbs_fit.py
 
-import glob
-import json
-import logging
 import os
 import re
 import sys
 import time
+import glob
+import json
+import logging
 from typing import TypedDict
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import tqdm
 from scipy.optimize import curve_fit
+from tqdm import tqdm
 
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 INFO = f"""
 ------------------------------------------
 Gibbs-Temperature Fitting (ver{VERSION})
@@ -50,7 +50,7 @@ Gibbs-Temperature Fitting (ver{VERSION})
 ------------------------------------------
 """
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s[%(levelname)s]%(message)s")
 
 
 class FitResult(TypedDict):
@@ -66,15 +66,14 @@ class FitResult(TypedDict):
 
 
 def _fit_func(x, A, B, C, D, E, F):
-    y = A + B * x * np.log(x) + C * x**2 + D * x**3 + E * x**(-1) + F * x
-    return y
+    return A + B * x + C * x * np.log(x) + D * x**2 + E * x**3 + F * x ** (-1)
 
 
 def _formula2str(A="A", B="B", C="C", D="D", E="E", F="F"):
     if isinstance(A, str):
-        s = f"{A}+{B}*T*LN(T)+{C}*T**2+{D}*T**3+{E}*T**(-1)+{F}*T"
+        s = f"{A}+{B}*T+{C}*T*LN(T)+{D}*T**2+{E}*T**3+{F}*T**(-1)"
     else:
-        s = f"{A:+E}{B:+E}*T*LN(T){C:+E}*T**2{D:+E}*T**3{E:+E}*T**(-1){F:+E}*T"
+        s = f"{A:+E}{B:+E}*T+{C:+E}*T*LN(T){D:+E}*T**2{E:+E}*T**3{F:+E}*T**(-1)"
     return s
 
 
@@ -94,7 +93,7 @@ def fit_gibbs_data(data: pd.DataFrame) -> tuple[list, float]:
     params, _ = curve_fit(_fit_func, x, y)
     residuals = y - _fit_func(x, *params)
     ss_res = np.sum(residuals**2)  # error sum of squares
-    ss_tot = np.sum((y - np.mean(y))**2)  # total sum of squares
+    ss_tot = np.sum((y - np.mean(y)) ** 2)  # total sum of squares
     r_squared = 1 - (ss_res / ss_tot)
     return params.tolist(), r_squared
 
@@ -104,15 +103,17 @@ def process_folder(folderpath: str, structure: str, times: int = 100) -> FitResu
     filepaths = glob.glob(os.path.join(folderpath, "gibbs-temperature.dat"))
     if not filepaths:
         logging.error(f"No gibbs-temperature.dat found in {folderpath}")
-        return FitResult(name=os.path.basename(folderpath),
-                         prefix="",
-                         elements=[],
-                         is_pure=False,
-                         expression="",
-                         params=[],
-                         r_squared=0,
-                         formula="",
-                         data=None)
+        return FitResult(
+            name=os.path.basename(folderpath),
+            prefix="",
+            elements=[],
+            is_pure=False,
+            expression="",
+            params=[],
+            r_squared=0,
+            formula="",
+            data=None,
+        )
 
     file = filepaths[0]
     name = os.path.basename(os.path.dirname(file))  # dirname of file
@@ -121,29 +122,33 @@ def process_folder(folderpath: str, structure: str, times: int = 100) -> FitResu
     data = read_gibbs_data(file, structure)
 
     # Fit the Gibbs-Temperature data
-    qbar = tqdm.tqdm(total=times, desc=f"Fitting {name}", ncols=80)
     best_params = []
     best_r2 = 0
-    for i in range(0, times):
+    for i in tqdm(
+        range(0, times),
+        desc=f"Fitting {name}",
+        total=times,
+        ncols=80,
+        postfix={"R²": f"{best_r2:.3f}"},
+    ):
         params, r2 = fit_gibbs_data(data)
         if r2 > best_r2:
             best_params = params
             best_r2 = r2
-        qbar.update()
-        qbar.set_postfix({"r2": f"{best_r2:.3f}"})
         if best_r2 > 0.999:  # stop if r2 is already high
             break
-    qbar.close()
 
-    return FitResult(name=name,
-                     prefix=prefix,
-                     elements=elems,
-                     is_pure=True if name.endswith("pure") else False,
-                     expression=_formula2str(),
-                     params=best_params,
-                     r_squared=best_r2,
-                     formula=_formula2str(*best_params),
-                     data=data)
+    return FitResult(
+        name=name,
+        prefix=prefix,
+        elements=elems,
+        is_pure=True if name.endswith("pure") else False,
+        expression=_formula2str(),
+        params=best_params,
+        r_squared=best_r2,
+        formula=_formula2str(*best_params),
+        data=data,
+    )
 
 
 # def get_gibbs_files(directory: str) -> list:
@@ -183,8 +188,12 @@ def plot_fits(fit_results: list[FitResult], num: int, output_img: str):
     if num == 1:
         axes = np.array([[axes]])
 
-    qbar = tqdm.tqdm(total=len(fit_results), desc="Plotting fits", leave=False)
-    for ax, result in zip(axes.flatten(), fit_results):
+    for ax, result in tqdm(
+        zip(axes.flatten(), fit_results),
+        desc="Plotting fits",
+        total=len(fit_results),
+        ncols=80,
+    ):
         if result["data"] is None:
             ax.set_title(result["name"])
             ax.text(0.5, 0.5, "No data", ha="center", va="center")
@@ -192,18 +201,15 @@ def plot_fits(fit_results: list[FitResult], num: int, output_img: str):
             data = result["data"]
             x = data["T"].values
             y = data["G"].values
-            ax.plot(x, y, 'o', label="Data")
+            ax.plot(x, y, "o", label="Data")
             ax.plot(x, _fit_func(x, *result["params"]), "-", label="Fit")
             ax.set_title(result["name"])
             ax.set_xlabel("T")
             ax.set_ylabel("G")
             ax.legend()
 
-        qbar.update(1)
-    qbar.close()
-
     # Hide unused subplots
-    for ax in axes.flatten()[len(fit_results):]:
+    for ax in axes.flatten()[len(fit_results) :]:
         ax.axis("off")
 
     plt.tight_layout()
@@ -216,10 +222,12 @@ def save_tdb(fit_results: list[FitResult], structure: str, output_tdb: str):
         indent1 = " " * 1  # indentation for the first line
         indent2 = " " * 5  # indentation for the second and third lines
         A, B, C, D, E, F = params
-        return [f"{indent1}{keywd} 1.0 {A:+E}{B:+E}*T*LN(T)",
-                f"{indent2}{C:+E}*T**2{D:+E}*T**3{E:+E}*T**(-1)",
-                f"{indent2}{F:+E}*T{ending}; 6000 N  !",
-                ""]
+        return [
+            f"{indent1}{keywd} 1.0 {A:+E}{B:+E}*T",
+            f"{indent2}{C:+E}*T*LN(T)*{D:+E}*T**2{E:+E}*T**3",
+            f"{indent2}{F:+E}*T**(-1); 6000 N  !",
+            "",
+        ]
 
     texts = [""]
     for result in fit_results:
@@ -310,3 +318,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# nuitka --standalone --onefile --output-dir=dist --jobs=2 --lto=yes `
+# --follow-imports --enable-plugin=no-qt --onefile-no-compression `
+# --enable-plugin=upx --upx-binary="D:\\Programs\\upx-5.0.2-win64\\upx.exe" `
+# --nofollow-import-to=matplotlib.tests --nofollow-import-to=pandas.tests `
+# --nofollow-import-to=pytest --nofollow-import-to=setuptools.tests `
+# --output-filename=gibbsfit-0.3.1.exe `
+# --file-version=0.3.1 `
+# --copyright="(C) 2026 MCMF, Fuzhou University" `
+# old/gibbs_fit.py

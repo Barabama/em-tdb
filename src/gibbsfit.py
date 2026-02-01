@@ -4,10 +4,11 @@ import re
 import glob
 import json
 import logging
-from pathlib import Path
 import traceback
+from pathlib import Path
 from itertools import groupby
 from typing import Any, TypedDict
+
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
+from tqdm import tqdm
 
 from src.tdb.tdbi import Func, Param, Phase
 from src.tdb.tdbmgr import ParsedData
@@ -156,7 +158,14 @@ class GTFitter:
         times = 100
         best_params = []
         best_r2 = 0
-        for i in range(0, times):
+
+        for i in tqdm(
+            range(times),
+            desc=f"Fitting {name}",
+            total=times,
+            ncols=80,
+            postfix={"R²": f"{best_r2:.3f}"},
+        ):
             params, r2 = self._fit_data(gt_data)
             if r2 > best_r2:
                 best_params = params
@@ -217,7 +226,7 @@ class GTFitter:
         metrics = self.phase_metrics[phase]
         m_sum = sum(m for m in metrics)
         metrics = [m / m_sum for m in metrics]
-        elems = parts[1:1+len(metrics)]
+        elems = parts[1 : 1 + len(metrics)]
 
         if match := re.search(r"\-(\d+)(?:atoms?)?", name):
             atom_num = int(match.group(1))
@@ -259,7 +268,7 @@ class GTFitter:
         metrics = self.phase_metrics[phase]
         m_sum = sum(m for m in metrics)
         metrics = [m / m_sum for m in metrics]
-        elems = parts[1:1+len(metrics)]
+        elems = parts[1 : 1 + len(metrics)]
 
         struct = dict(qha_data["structure"])
         atoms = struct.get("sites", [])
@@ -315,7 +324,12 @@ class GTFitter:
             axes = np.array([axes])
 
         log.info(f"Plotting {len(fit_results)} fits")
-        for ax, res in zip(axes.flatten(), fit_results):
+        for ax, res in tqdm(
+            zip(axes.flatten(), fit_results),
+            desc="Plotting fits",
+            total=len(fit_results),
+            ncols=80,
+        ):
             if res["data"] is None:
                 ax.set_title(res["name"])
                 ax.text(0.5, 0.5, "No data", ha="center", va="center")
