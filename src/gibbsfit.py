@@ -160,7 +160,7 @@ class GTFitter:
         best_r2 = 0
 
         for i in tqdm(
-            range(times),
+            range(1, times),
             desc=f"Fitting {name}",
             total=times,
             ncols=80,
