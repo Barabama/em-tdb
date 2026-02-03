@@ -79,7 +79,7 @@ def _formula2str(A="A", B="B", C="C", D="D", E="E", F="F"):
 
 def read_gibbs_data(filepath: str, structure: str) -> pd.DataFrame:
     """Read the Gibbs-Temperature data."""
-    atom_num = 2 if structure == "BCC" else 4  # atoms per sell, BCC: 2, HCP: 2, FCC: 4
+    atom_num = 2 if structure in ["BCC", "HCP"] else 4  # atoms per sell, BCC: 2, HCP: 2, FCC: 4
     data = pd.read_csv(filepath, sep="\\s+", skiprows=1, header=None, names=["T", "G"])
     data = data[(data["T"] <= 2000) & (data["T"] >= 100)]
     data["G"] = data["G"] * 96485 / atom_num  # F = eNa = 96485 (C/mol)
@@ -223,8 +223,8 @@ def save_tdb(fit_results: list[FitResult], structure: str, output_tdb: str):
         indent2 = " " * 5  # indentation for the second and third lines
         A, B, C, D, E, F = params
         return [
-            f"{indent1}{keywd} 1.0 {A:+E}{B:+E}*T",
-            f"{indent2}{C:+E}*T*LN(T)*{D:+E}*T**2{E:+E}*T**3",
+            f"{indent1}{keywd} 1.0 {A:+E}+{B:+E}*T",
+            f"{indent2}{C:+E}*T*LN(T)+{D:+E}*T**2{E:+E}*T**3",
             f"{indent2}{F:+E}*T**(-1); 6000 N  !",
             "",
         ]
@@ -239,14 +239,27 @@ def save_tdb(fit_results: list[FitResult], structure: str, output_tdb: str):
             ending = ""
             texts.extend(gen_tdb_text(keywd, ending, params))
         else:
-            e1, e2 = result["elements"]
+            elements = result["elements"]
+            if len(elements) != 2:
+                logging.warning(
+                    f"Skipping {result['name']}: expected 2 elements, got {len(elements)}"
+                )
+                continue
+            e1, e2 = elements
             keywd = f"PARAMETER G({structure},{e1}:{e2};0)"
-            c1, c2 = [-0.5, -0.5] if structure == "BCC" else [-0.25, -0.75]
+            if structure == "BCC":
+                c1, c2 = [-0.5, -0.5]
+            elif structure == "FCC":
+                c1, c2 = [-0.25, -0.75]
+            elif structure == "HCP":
+                c1, c2 = [-0.25, -0.75]  # HCP结构的系数可能需要根据实际情况调整
+            else:
+                c1, c2 = [-0.25, -0.75]  # 默认值
             ending = f"{c1}*SER{e1}#{c2}*SER{e2}#"
             texts.extend(gen_tdb_text(keywd, ending, params))
 
-            # Exchange elements and again if BCC
-            if structure == "BCC" and e1 != e2:
+            # Exchange elements and again
+            if c1 == c2 and e1 != e2:
                 keywd = f"PARAMETER G({structure},{e2}:{e1};0)"
                 ending = f"{c2}*SER{e2}#{c1}*SER{e1}#"
                 texts.extend(gen_tdb_text(keywd, ending, params))
