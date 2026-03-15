@@ -22,6 +22,14 @@ from src.tdb.tdbmgr import TDBManager
 def test_tdb_file():
     return Path(__file__).parent / "test1.tdb"
 
+@pytest.fixture
+def test_fit_dat_dir():
+    return Path(__file__).parent.parent / "fits-dat"
+
+@pytest.fixture
+def test_fit_json_dir():
+    return Path(__file__).parent.parent / "fits-json"
+
 
 @pytest.fixture(scope="module")
 def parser():
@@ -29,24 +37,24 @@ def parser():
 
 
 class TestCmdParse:
-    def test_parse_with_json_output(self, test_tdb_file):
-        args = argparse.Namespace(tdb_file=str(test_tdb_file), output="json", tdb_name="test")
+    def test_parse_with_tdb_name(self, test_tdb_file):
+        args = argparse.Namespace(tdb_file=str(test_tdb_file), tdb_name="test")
         result = cmd_parse(args)
         assert result == 0
 
-    def test_parse_with_repr_output(self, test_tdb_file):
-        args = argparse.Namespace(tdb_file=str(test_tdb_file), output="repr", tdb_name="")
+    def test_parse_without_tdb_name(self, test_tdb_file):
+        args = argparse.Namespace(tdb_file=str(test_tdb_file), tdb_name="")
         result = cmd_parse(args)
         assert result == 0
 
     def test_parse_nonexistent_file(self):
-        args = argparse.Namespace(tdb_file="nonexistent.tdb", output="json", tdb_name="")
+        args = argparse.Namespace(tdb_file="nonexistent.tdb", tdb_name="")
         result = cmd_parse(args)
         assert result == 1
 
-    def test_parse_with_tdb_name(self, test_tdb_file):
+    def test_parse_with_custom_tdb_name(self, test_tdb_file):
         args = argparse.Namespace(
-            tdb_file=str(test_tdb_file), output="json", tdb_name="custom_tdb_name"
+            tdb_file=str(test_tdb_file), tdb_name="custom_tdb_name"
         )
         result = cmd_parse(args)
         assert result == 0
@@ -57,7 +65,6 @@ class TestParser:
         args = parser.parse_args(["parse", "--tdb-file", str(test_tdb_file)])
         assert args.command == "parse"
         assert args.tdb_file == str(test_tdb_file)
-        assert args.output == "json"
         assert args.tdb_name == ""
 
     def test_parse_command_with_all_options(self, parser, test_tdb_file):
@@ -66,35 +73,25 @@ class TestParser:
                 "parse",
                 "--tdb-file",
                 str(test_tdb_file),
-                "--output",
-                "repr",
                 "--tdb-name",
                 "test_tdb",
             ]
         )
         assert args.command == "parse"
         assert args.tdb_file == str(test_tdb_file)
-        assert args.output == "repr"
         assert args.tdb_name == "test_tdb"
 
     def test_parse_command_short_options(self, parser, test_tdb_file):
         args = parser.parse_args(
-            ["parse", "-f", str(test_tdb_file), "-o", "json", "-n", "test"]
+            ["parse", "-f", str(test_tdb_file), "-n", "test"]
         )
         assert args.command == "parse"
         assert args.tdb_file == str(test_tdb_file)
-        assert args.output == "json"
         assert args.tdb_name == "test"
 
     def test_parse_command_missing_tdb_file(self, parser):
         with pytest.raises(SystemExit):
             parser.parse_args(["parse"])
-
-    def test_parse_command_invalid_output(self, parser, test_tdb_file):
-        with pytest.raises(SystemExit):
-            parser.parse_args(
-                ["parse", "--tdb-file", str(test_tdb_file), "--output", "invalid"]
-            )
 
     def test_parser_has_parse_subcommand(self, parser):
         with pytest.raises(SystemExit):
@@ -187,12 +184,12 @@ class TestCmdImport:
 class TestParserImport:
     def test_import_command_required_args(self, parser, test_tdb_file):
         args = parser.parse_args(
-            ["import", "--typed", "elem", "--tdb-file", str(test_tdb_file)]
+            ["import", "--tdb-file", str(test_tdb_file)]
         )
         assert args.command == "import"
         assert args.tdb_file == str(test_tdb_file)
-        assert args.typed == "elem"
-        assert args.db == ":memory:"
+        assert args.typed == ""
+        assert args.db == ""
         assert args.tdb_name == ""
         assert args.desc == ""
         assert args.ver == ""
@@ -246,13 +243,9 @@ class TestParserImport:
         assert args.desc == "desc"
         assert args.ver == "2.0"
 
-    def test_import_command_missing_typed(self, parser, test_tdb_file):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["import", "--tdb-file", str(test_tdb_file)])
-
     def test_import_command_missing_tdb_file(self, parser):
         with pytest.raises(SystemExit):
-            parser.parse_args(["import", "--typed", "elem"])
+            parser.parse_args(["import"])
 
     def test_import_command_invalid_typed(self, parser, test_tdb_file):
         with pytest.raises(SystemExit):
@@ -316,11 +309,11 @@ class TestCmdExport:
 
 class TestParserExport:
     def test_export_command_required_args(self, parser):
-        args = parser.parse_args(["export", "--output", "output.tdb"])
+        args = parser.parse_args(["export", "--db", "test.db", "--output", "output.tdb", "--tdb-name", "test"])
         assert args.command == "export"
+        assert args.db == "test.db"
         assert args.output == "output.tdb"
-        assert args.db == ":memory:"
-        assert args.tdb_name == ""
+        assert args.tdb_name == "test"
 
     def test_export_command_with_all_options(self, parser):
         args = parser.parse_args(
@@ -331,15 +324,17 @@ class TestParserExport:
         assert args.output == "output.tdb"
         assert args.tdb_name == "test"
 
-    def test_export_command_short_options(self, parser):
-        args = parser.parse_args(["export", "-o", "output.tdb", "-n", "test"])
-        assert args.command == "export"
-        assert args.output == "output.tdb"
-        assert args.tdb_name == "test"
+    def test_export_command_missing_db(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["export", "--output", "output.tdb", "--tdb-name", "test"])
 
     def test_export_command_missing_output(self, parser):
         with pytest.raises(SystemExit):
-            parser.parse_args(["export"])
+            parser.parse_args(["export", "--db", "test.db"])
+
+    def test_export_command_missing_tdb_name(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["export", "--db", "test.db", "--output", "output.tdb"])
 
     def test_parser_has_export_subcommand(self, parser):
         with pytest.raises(SystemExit):
@@ -441,7 +436,7 @@ class TestParserList:
         args = parser.parse_args(["list", "--typed", "elem"])
         assert args.command == "list"
         assert args.typed == "elem"
-        assert args.db == ":memory:"
+        assert args.db == ""
         assert args.like == False
 
     def test_list_command_with_all_options(self, parser):
@@ -556,7 +551,7 @@ class TestParserDelete:
         assert args.command == "delete"
         assert args.typed == "elem"
         assert args.elem == "A"
-        assert args.db == ":memory:"
+        assert args.db == ""
         assert args.cascade == False
 
     def test_delete_command_with_all_options(self, parser):
@@ -598,10 +593,10 @@ class TestParserDelete:
 
 class TestCmdFit:
     @patch("src.cli.GTFitter")
-    def test_fit_with_json_data_type(self, mock_fitter):
+    def test_fit_with_json_data_type(self, mock_fitter, test_fit_json_dir):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            data_dir = Path(__file__).parent / "fits-json"
+            data_dir = test_fit_json_dir
 
             mock_instance = MagicMock()
             mock_instance.process_folders.return_value = []
@@ -617,10 +612,10 @@ class TestCmdFit:
             assert db_path.exists()
 
     @patch("src.cli.GTFitter")
-    def test_fit_with_dat_data_type(self, mock_fitter):
+    def test_fit_with_dat_data_type(self, mock_fitter, test_fit_dat_dir):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            data_dir = Path(__file__).parent / "fits-json"
+            data_dir = test_fit_dat_dir
 
             mock_instance = MagicMock()
             mock_instance.process_folders.return_value = []
@@ -636,10 +631,10 @@ class TestCmdFit:
             assert db_path.exists()
 
     @patch("src.cli.GTFitter")
-    def test_fit_with_custom_tdb_name(self, mock_fitter):
+    def test_fit_with_custom_tdb_name(self, mock_fitter, test_fit_json_dir):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            data_dir = Path(__file__).parent / "fits-json"
+            data_dir = test_fit_json_dir
 
             mock_instance = MagicMock()
             mock_instance.process_folders.return_value = []
@@ -661,11 +656,11 @@ class TestCmdFit:
 
 class TestParserFit:
     def test_fit_command_required_args(self, parser):
-        args = parser.parse_args(["fit", "--data-dir", "/path/to/data", "--tdb-name", "test"])
+        args = parser.parse_args(["fit", "--data-dir", "/path/to/data"])
         assert args.command == "fit"
         assert args.data_dir == "/path/to/data"
-        assert args.tdb_name == "test"
-        assert args.db == ":memory:"
+        assert args.tdb_name == ""
+        assert args.db == ""
         assert args.data_type == "dat"
 
     def test_fit_command_with_all_options(self, parser):
@@ -697,11 +692,7 @@ class TestParserFit:
 
     def test_fit_command_missing_data_dir(self, parser):
         with pytest.raises(SystemExit):
-            parser.parse_args(["fit", "--tdb-name", "test"])
-
-    def test_fit_command_missing_tdb_name(self, parser):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["fit", "--data-dir", "/path/to/data"])
+            parser.parse_args(["fit"])
 
     def test_parser_has_fit_subcommand(self, parser):
         with pytest.raises(SystemExit):

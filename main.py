@@ -1,5 +1,4 @@
 
-
 from src.cli import main as cli_main
 
 if __name__ == "__main__":

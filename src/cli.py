@@ -1,6 +1,5 @@
 # src/cli.py
 
-
 import sys
 import json
 import logging
@@ -14,18 +13,25 @@ from src.gibbsfit import GTFitter
 
 from src.config import VERSION, DB_CHOICES, PHASE_METRICS, DATA_TYPES
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s[%(levelname)s]%(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger(__name__)
 
 
 def cmd_parse(args: argparse.Namespace) -> int:
     tdb_file = args.tdb_file
-    output = args.output
-    tdb_name = args.tdb_name
+    tdb_file = Path(tdb_file) if isinstance(tdb_file, str) else tdb_file
+    tdb_name = args.tdb_name or str(tdb_file.stem)
     try:
         tdb_mgr = TDBManager(ThermoDBI(":memory:"))
         parsed = tdb_mgr.parse_tdb(tdb_file, tdb_name)
-        result = json.dumps(parsed.to_dict(), indent=2) if output == "json" else repr(parsed)
-        log.info(result)
+        output = f"{tdb_name}.json"
+        with open(output, "w", encoding="utf-8") as f:
+            json.dump(parsed.to_dict(), f, indent=2)
+        log.info(f"TDB {tdb_name} parsed to {output}")
         return 0
     except Exception as e:
         log.error(traceback.format_exc())
@@ -34,11 +40,12 @@ def cmd_parse(args: argparse.Namespace) -> int:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    db_path = args.db
+    db_path = args.db or ":memory:"
     tdb_file = args.tdb_file
-    tdb_name = args.tdb_name
+    tdb_file = Path(tdb_file) if isinstance(tdb_file, str) else tdb_file
+    tdb_name = args.tdb_name or str(tdb_file.stem)
     typed = args.typed
-    desc = args.desc
+    desc = args.desc or ""
     ver = args.ver or "1.0"
     try:
         tdb_mgr = TDBManager(ThermoDBI(db_path))
@@ -49,13 +56,21 @@ def cmd_import(args: argparse.Namespace) -> int:
         elif typed == "func":
             tdb_mgr.save_functions(parsed.funcs)
             log.info(f"Imported {len(parsed.funcs)} functions")
-        else:
+        elif typed == "tdb":
             tdb_mgr.import_tdb(parsed.phases, parsed.params, parsed.tdb, desc, ver)
             log.info(f"Imported TDB '{tdb_name}' with phases and parameters")
+        elif not typed:
+            tdb_mgr.save_elements(parsed.elems)
+            tdb_mgr.save_functions(parsed.funcs)
+            tdb_mgr.import_tdb(parsed.phases, parsed.params, parsed.tdb, desc, ver)
+            log.info(f"Imported TDB '{tdb_name}' all data")
+        else:
+            log.error(f"Unknown type {typed}")
+            return 1
         return 0
     except Exception as e:
         log.error(traceback.format_exc())
-        log.error(f"Error importing {tdb_file} into {db_path}: {e}")
+        log.error(f"Error importing {tdb_file} into db {db_path}: {e}")
         return 1
     finally:
         del tdb_mgr
@@ -79,21 +94,42 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 def cmd_fit(args: argparse.Namespace) -> int:
-    db_path = args.db
+    db_path = args.db or ":memory:"
     data_dir = args.data_dir
+    data_dir = Path(data_dir) if isinstance(data_dir, str) else data_dir
     data_type = args.data_type
-    tdb_name = args.tdb_name
+    tdb_name = args.tdb_name or str(data_dir.stem)
     try:
         tdb_mgr = TDBManager(ThermoDBI(db_path))
         fitter = GTFitter(PHASE_METRICS)
         results = fitter.process_folders(data_dir, data_type)
-        img_path = Path(data_dir).joinpath("fit_results.png")
+        log.info(f"Processed {len(results)} fits")
+
+        img_path = data_dir.joinpath("fit_results.png")
+        log.info(f"Plotting fit results to {img_path}...")
         fitter.plot_fits(results, img_path)
+
         parsed = fitter.fit2db(results, tdb_name)
+
+        log.info(f"Saving {len(parsed.funcs)} functions...")
+        tdb_mgr.save_functions(parsed.funcs)
+
+        log.info(f"Importing {len(parsed.params)} parameters...")
         tdb_mgr.import_tdb(
-            parsed.phases, parsed.params, parsed.tdb, desc=f"fitted from {data_dir}"
+            parsed.phases,
+            parsed.params,
+            parsed.tdb,
+            desc=f"fitted from {data_dir}",
+            ver=VERSION,
         )
         log.info(f"Fitted {tdb_name} from {data_dir} and imported")
+
+        # Export TDB if in memory
+        if db_path == ":memory:":
+            output = f"{tdb_name}.tdb"
+            tdb_mgr.export_tdb(tdb_name, output)
+            log.info(f"Exported {tdb_name} to {output}")
+
         return 0
     except Exception as e:
         log.error(traceback.format_exc())
@@ -104,7 +140,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    db_path = args.db
+    db_path = args.db or ":memory:"
     typed = args.typed
     like = args.like
     filters = {
@@ -135,7 +171,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_delete(args: argparse.Namespace) -> int:
-    db_path = args.db
+    db_path = args.db or ":memory:"
     typed = args.typed
     cascade = args.cascade
     filters = {
@@ -186,18 +222,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="TDB file path",
     )
     p_parse.add_argument(
-        "--output",
-        "-o",
-        choices=["json", "repr"],
-        default="json",
-        help="Output format",
-    )
-    p_parse.add_argument(
         "--tdb-name",
         "-n",
         type=str,
         default="",
-        help="Optional logical tdb name in DB",
+        help="Optional logical tdb name in DB (default: filename)",
     )
 
     # Import ------------------------------------------------
@@ -207,8 +236,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
     p_import.add_argument(
         "--db",
-        default=":memory:",
-        help="Database path",
+        default="",
+        help="Optional database path (default: in-memory)",
     )
     p_import.add_argument(
         "--tdb-file",
@@ -221,26 +250,26 @@ def create_parser() -> argparse.ArgumentParser:
         "--typed",
         "-t",
         choices=DB_CHOICES,
-        required=True,
-        help="Type of entry to import",
+        default="",
+        help="Type of entry to import (default: all)",
     )
     p_import.add_argument(
         "--tdb-name",
         "-n",
         default="",
-        help="Logical tdb name in DB (default: filename)",
+        help="Optional logical tdb name in DB (default: filename)",
     )
     p_import.add_argument(
         "--desc",
         "-d",
         default="",
-        help="Description of the tdb",
+        help="Optional description of the tdb",
     )
     p_import.add_argument(
         "--ver",
         "-v",
         default="",
-        help="Version of the tdb",
+        help="Optional version of the tdb",
     )
 
     # Export ------------------------------------------------
@@ -250,7 +279,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
     p_export.add_argument(
         "--db",
-        default=":memory:",
+        type=str,
+        required=True,
         help="Database path",
     )
     p_export.add_argument(
@@ -263,8 +293,9 @@ def create_parser() -> argparse.ArgumentParser:
     p_export.add_argument(
         "--tdb-name",
         "-n",
-        default="",
-        help="Logical tdb name in DB (default: filename)",
+        type=str,
+        required=True,
+        help="Logical tdb name in DB",
     )
 
     # Fit Gibbs ------------------------------------------------
@@ -274,8 +305,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
     p_fit.add_argument(
         "--db",
-        default=":memory:",
-        help="Database path",
+        default="",
+        help="Optional database path (default: in-memory)",
     )
     p_fit.add_argument(
         "--data-dir",
@@ -293,8 +324,8 @@ def create_parser() -> argparse.ArgumentParser:
     p_fit.add_argument(
         "--tdb-name",
         "-n",
-        required=True,
-        help="Logical tdb name in DB",
+        default="",
+        help="Optional logical tdb name in DB (default: data_dir name)",
     )
 
     # List ------------------------------------------------
@@ -304,8 +335,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
     p_list.add_argument(
         "--db",
-        default=":memory:",
-        help="Database path",
+        default="",
+        help="Optional database path (default: in-memory)",
     )
     p_list.add_argument(
         "--typed",
@@ -354,8 +385,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
     p_delete.add_argument(
         "--db",
-        default=":memory:",
-        help="Database path",
+        default="",
+        help="Optional database path (default: in-memory)",
     )
     p_delete.add_argument(
         "--typed",

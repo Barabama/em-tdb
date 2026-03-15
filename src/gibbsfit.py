@@ -39,13 +39,14 @@ class QhaData(TypedDict):
     gruneisen_t: list[float]  # γ(T)
     volume_t: list[float]  # V(T)
     energy_kJ_mol_t: list[float]  # F(V,T) kJ/mol
+    energy0_kJ_mol_t: list[float]  # E0(T) kJ/mol
     entropy_v_t: list[list[float]]  # S(V,T)
     heat_capp_J_mol_K_v_t: list[list[float]]  # Cv(V,T) J/mol/K
     helmholtz_v_t: list[list[float]]  # A(V,T)
 
 
 # 原来的E-V.dat, 即DFT静态能量E0(V), 近似于 energy_kJ_mol_t[0]
-# 或从store取"store_inputs eos deformation *" output["output"]["energy"]
+# 或从store取"phonon static eos deformation *" output["output"]["energy"]
 
 
 class FitResult(TypedDict):
@@ -154,23 +155,25 @@ class GTFitter:
         Returns:
             list: List of fit results.
         """
+        elems = [e.upper() for e in elems]
         # Fit the Gibbs-Temperature data
         times = 100
         best_params = []
         best_r2 = 0
 
         for i in tqdm(
-            range(1, times),
+            range(times),
             desc=f"Fitting {name}",
             total=times,
             ncols=80,
-            postfix={"R²": f"{best_r2:.3f}"},
         ):
             params, r2 = self._fit_data(gt_data)
             if r2 > best_r2:
                 best_params = params
                 best_r2 = r2
-            if 1 - r2 < 1e-3:  # stop if r2 is already high
+                # Update progress bar with current best R²
+                tqdm.write(f"  Improved R²: {best_r2:.3f}")
+            if i >= 1 and 1 - r2 < 1e-3:  # stop if r2 is already high
                 break
         log.info(f"{name} {phase} {elems} {metrics} {best_params} {best_r2:.3f}")
         results = [
@@ -232,6 +235,7 @@ class GTFitter:
             atom_num = int(match.group(1))
         else:
             atom_num = 1
+        log.info(f"Processing {name} with {atom_num} atoms")
 
         gt_data = self._read_dat(Path(file), atom_num)
 
@@ -273,10 +277,14 @@ class GTFitter:
         struct = dict(qha_data["structure"])
         atoms = struct.get("sites", [])
         atom_num = len(atoms) or 1
+        atom_num = atom_num / 2 if phase == "HCP" else atom_num  # HCP has half atoms
+        atom_num = 1 if len(set(elems)) == 1 else atom_num  # single element
+        log.info(f"Processing {name} with {atom_num} atoms")
 
         temps = qha_data["temperatures_K"]
         gibbs = qha_data["gibbs_t"]
-        gt_data = self._read_json(temps, gibbs, atom_num)
+        min_len = min(len(temps), len(gibbs))
+        gt_data = self._read_json(temps[:min_len], gibbs[:min_len], atom_num)
 
         return self._gen_fit_results(gt_data, name, phase, elems, metrics)
 
@@ -298,19 +306,22 @@ class GTFitter:
             raise ValueError(f"Invalid file_type: {data_type}")
 
         fit_results: list[FitResult] = []
-        for folder in sorted(directory.iterdir(), key=lambda x: x.name):
-            log.info(f"Processing {folder.name}")
+        for item in sorted(directory.iterdir(), key=lambda x: x.name):
+            if not item.is_dir():
+                log.warning(f"{item.name} is not a folder, skip")
+                continue
+            log.info(f"Processing {item.name}")
             try:
-                results: list[FitResult] = self.func_map[data_type](folder)
+                results: list[FitResult] = self.func_map[data_type](item)
                 fit_results.extend(results)
             except Exception as e:
                 log.error(traceback.format_exc())
-                log.error(f"Error processing {folder.name}: {e}")
+                log.error(f"Error processing {item.name}: {e}")
 
         return fit_results
 
     def plot_fits(self, fit_results: list[FitResult], output: Path | str):
-        """Plot all the fits in one image.
+        """Plot all the fits in one or more images.
 
         Args:
             fit_results: The results to plot.
@@ -318,42 +329,69 @@ class GTFitter:
         """
         fit_results = sorted(fit_results, key=lambda x: (not x["is_ser"], x["name"]))
         output = Path(output) if isinstance(output, str) else output
-        num = int(np.ceil(np.sqrt(len(fit_results))))
-        fig, axes = plt.subplots(num, num, figsize=(num * 8, num * 8))
-        if num == 1:
-            axes = np.array([axes])
+        
+        # Set maximum number of subplots per image
+        max_subplots_per_image = 64  # 8x8 grid
+        
+        # Calculate number of batches needed
+        num_fits = len(fit_results)
+        num_batches = (num_fits + max_subplots_per_image - 1) // max_subplots_per_image
+        
+        log.info(f"Plotting {num_fits} fits in {num_batches} batches")
+        
+        # Process each batch
+        for batch_idx in range(num_batches):
+            # Get the fits for this batch
+            start_idx = batch_idx * max_subplots_per_image
+            end_idx = min((batch_idx + 1) * max_subplots_per_image, num_fits)
+            batch_fits = fit_results[start_idx:end_idx]
+            
+            # Calculate grid size for this batch
+            num_in_batch = len(batch_fits)
+            grid_size = int(np.ceil(np.sqrt(num_in_batch)))
+            fig, axes = plt.subplots(grid_size, grid_size, figsize=(grid_size * 8, grid_size * 8))
+            if grid_size == 1:
+                axes = np.array([axes])
+            
+            # Generate output filename for this batch
+            if num_batches > 1:
+                batch_output = output.parent / f"{output.stem}_batch{batch_idx + 1}{output.suffix}"
+            else:
+                batch_output = output
+            
+            # Plot fits for this batch
+            for ax, res in tqdm(
+                zip(axes.flatten(), batch_fits),
+                desc=f"Plotting batch {batch_idx + 1}/{num_batches}",
+                total=num_in_batch,
+                ncols=80,
+            ):
+                if res["data"] is None:
+                    ax.set_title(res["name"])
+                    ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                    continue
 
-        log.info(f"Plotting {len(fit_results)} fits")
-        for ax, res in tqdm(
-            zip(axes.flatten(), fit_results),
-            desc="Plotting fits",
-            total=len(fit_results),
-            ncols=80,
-        ):
-            if res["data"] is None:
+                data = res["data"]
+                x = data["T"].values
+                y = data["G"].values
+                ax.plot(x, y, "o", label="Data")
+                ax.plot(
+                    x,
+                    self._fit_func(x, *res["params"]),
+                    "-",
+                    label=f"R²={res['r2']:.3f}",
+                )
                 ax.set_title(res["name"])
-                ax.text(0.5, 0.5, "No data", ha="center", va="center")
-                continue
+                ax.legend()
 
-            data = res["data"]
-            x = data["T"].values
-            y = data["G"].values
-            ax.plot(x, y, "o", label="Data")
-            ax.plot(
-                x,
-                self._fit_func(x, *res["params"]),
-                "-",
-                label=f"R²={res['r2']:.3f}",
-            )
-            ax.set_title(res["name"])
-            ax.legend()
-
-        # Hide unused subplots
-        for ax in axes.flatten()[len(fit_results) :]:
-            ax.axis("off")
-        plt.tight_layout()
-        plt.savefig(output)
-        plt.close(fig)
+            # Hide unused subplots
+            for ax in axes.flatten()[num_in_batch:]:
+                ax.axis("off")
+            
+            plt.tight_layout()
+            plt.savefig(batch_output)
+            plt.close(fig)
+            log.info(f"Saved batch {batch_idx + 1} to {batch_output}")
 
     def fit2db(self, fit_results: list[FitResult], tdb_name: str) -> ParsedData:
         """Convert fit results to objects for ThermoDB.
@@ -373,22 +411,26 @@ class GTFitter:
             is_ser: list(group)
             for is_ser, group in groupby(
                 sorted(fit_results, key=lambda x: not x["is_ser"]),
-                key=lambda x: not x["is_ser"],
+                key=lambda x: x["is_ser"],
             )
         }
 
-        # Get ser functions
-        funcs = [
-            Func(
-                func=f"SER{f['elements'][0]}",
-                elem=f["elements"][0],
-                temp_start=1.0,
-                temp_end=6000.0,
-                expression=f["expression"],
-                is_continued="N",
-            )
-            for f in ser_groups.get(True, [])
-        ]
+        # Get ser functions with deduplication
+        ser_funcs = {}
+        for f in ser_groups.get(True, []):
+            elem = f"{f['elements'][0]:2s}"
+            func_name = f"SER_{elem}"
+            # Only keep the first occurrence of each function name
+            if func_name not in ser_funcs:
+                ser_funcs[func_name] = Func(
+                    func=func_name,
+                    elem=elem,
+                    temp_start=1.0,
+                    temp_end=6000.0,
+                    expression=f["expression"],
+                    is_continued="N",
+                )
+        funcs = list(ser_funcs.values())
 
         # Get non-ser parameters
         fit_params = ser_groups.get(False, [])
@@ -405,7 +447,7 @@ class GTFitter:
             # The first metrics would be used to define the stoichiometry
             stoichiometry = set(tuple(f["metrics"]) for f in fits).pop()
             components = [
-                ",".join(sorted(set(f["elements"][i] for f in fits)))
+                ",".join(sorted(set(f"{f['elements'][i]:2s}" for f in fits)))
                 for i in range(len(stoichiometry))
             ]
             phases.append(
@@ -420,9 +462,9 @@ class GTFitter:
 
             # Get the parameters
             for f in fits:
-                elems = f["elements"]
+                elems = [f"{e:2s}" for e in f["elements"]]
                 ser_expr = "".join(
-                    f"-{stoichiometry[i]}*SER{elems[i]}#" for i in range(len(elems))
+                    f"-{stoichiometry[i]}*SER_{elems[i]}#" for i in range(len(elems))
                 )
                 params.append(
                     Param(

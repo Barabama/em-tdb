@@ -138,5 +138,6 @@ dmypy.json
 cython_debug/
 
 data/*
+tests/*
 temp/*
 tmp/*

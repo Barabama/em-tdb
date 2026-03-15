@@ -125,13 +125,31 @@ class ThermoDBI:
     }
 
     def __init__(self, db_path: str | Path = ":memory:"):
+        is_in_memory = str(db_path) == ":memory:"
         db_path = Path(db_path) if isinstance(db_path, str) else db_path
-        if not db_path.exists():
-            self.init_db(db_path)
-        self.conn = sqlite3.connect(db_path)
-        self.conn.execute("PRAGMA foreign_keys = ON;")  # foreign key constraint
-        self.conn.row_factory = sqlite3.Row  # access columns by name
-        self.cursor = self.conn.cursor()
+        
+        if is_in_memory:
+            # For in-memory database, create connection first then initialize
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.row_factory = sqlite3.Row
+            self.cursor = self.conn.cursor()
+            # Initialize tables directly using the same connection
+            sql_path = Path(__file__).parent.joinpath("schema.sql")
+            if not sql_path.exists():
+                raise FileNotFoundError(f"{sql_path} not found")
+            with open(sql_path, "r", encoding="utf-8") as f:
+                sql_script = f.read()
+                self.cursor.executescript(sql_script)
+            # Disable foreign keys after schema creation (schema.sql enables them)
+            self.conn.execute("PRAGMA foreign_keys = OFF;")
+            self.conn.commit()
+        else:
+            # For file-based database, use existing logic
+            if not db_path.exists():
+                self.init_db(db_path)
+            self.conn = sqlite3.connect(db_path)
+            self.conn.row_factory = sqlite3.Row  # access columns by name
+            self.cursor = self.conn.cursor()
 
     def init_db(self, db_path: Path):
         """Initialize Endmember Thermodynamic Database."""
@@ -185,7 +203,7 @@ class ThermoDBI:
 
         columns = ", ".join([v for v in data_list[0].keys()])
         holders = ", ".join(["?"] * len(data_list[0]))
-        sql = f"INSERT INTO {table} ({columns}) VALUES ({holders})"
+        sql = f"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({holders})"
         values = [tuple([v for v in d.values()]) for d in data_list]
 
         self.cursor.executemany(sql, values)

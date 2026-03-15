@@ -366,7 +366,7 @@ class TDBManager(TDBParser):
                     self.db.update_element(**e.__dict__)
 
     def save_functions(self, new_funcs: list[Func], keep: bool = True):
-        """Save functions to the database.
+        """Save functions to database.
 
         Args:
             new_funcs (list[Func]): List of functions to save.
@@ -411,7 +411,7 @@ class TDBManager(TDBParser):
             if len(params) > 0:
                 self.db.create_parameters(params)
 
-    def export_tdb(self, tdb_name: str, output: str):
+    def export_tdb(self, tdb_name: str, output: Path | str):
         """Export tdb to file.
 
         Args:
