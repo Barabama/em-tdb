@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 
-from src.config import PHASE_METRICS
+from emtdb.config import PHASE_METRICS
 
 
 def find_deepest_ve_dat(folder: Path | str) -> Path | None:
