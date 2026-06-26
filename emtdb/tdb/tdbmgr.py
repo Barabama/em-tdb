@@ -1,4 +1,6 @@
-# src/tdbmgr.py
+"""
+EM-TDB - Manager for parsing and managing thermodynamic database files.
+"""
 
 import re
 
@@ -6,7 +8,7 @@ from pathlib import Path
 from itertools import groupby
 from dataclasses import dataclass, asdict
 
-from src.tdb.tdbi import Elem, Func, Phase, Param, ThermoDBI
+from emtdb.tdb import Elem, Func, Tdb, Phase, Param, ThermoDBI
 
 
 @dataclass

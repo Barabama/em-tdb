@@ -1,4 +1,6 @@
-# src/cli.py
+"""
+EM-TDB - Command-line interface for parsing and managing thermodynamic database files.
+"""
 
 import sys
 import json
@@ -7,11 +9,11 @@ import argparse
 import traceback
 from pathlib import Path
 
-from src.tdb.tdbi import ThermoDBI
-from src.tdb.tdbmgr import TDBManager
-from src.gibbsfit import GTFitter
-
-from src.config import VERSION, DB_CHOICES, PHASE_METRICS, DATA_TYPES
+from emtdb.tdb import ThermoDBI
+from emtdb.tdb import TDBManager
+from emtdb.gibbsfit import GTFitter
+    
+from emtdb.config import VERSION, DB_CHOICES, PHASE_METRICS, DATA_TYPES
 
 logging.basicConfig(
     level=logging.INFO,

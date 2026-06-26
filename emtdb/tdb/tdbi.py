@@ -1,7 +1,12 @@
-# src/tdbi.py
+"""
+EM-TDB - Endmember Thermodynamic Database Interface
 
-from copy import deepcopy
+Interface for managing thermodynamic database
+CRUD operations for elements, functions, TDBs, phases, and parameters.
+"""
+
 import sqlite3
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypedDict, Union, Sequence
 
@@ -127,7 +132,7 @@ class ThermoDBI:
     def __init__(self, db_path: str | Path = ":memory:"):
         is_in_memory = str(db_path) == ":memory:"
         db_path = Path(db_path) if isinstance(db_path, str) else db_path
-        
+
         if is_in_memory:
             # For in-memory database, create connection first then initialize
             self.conn = sqlite3.connect(":memory:")

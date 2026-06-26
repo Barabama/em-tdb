@@ -1,4 +1,6 @@
-# src/core/gibbsfit.py
+"""
+EM-TDB - Gibbs free energy fit.
+"""
 
 import re
 import glob
@@ -19,30 +21,29 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from tqdm import tqdm
 
-from src.tdb.tdbi import Func, Param, Phase
-from src.tdb.tdbmgr import ParsedData
+from emtdb.tdb.tdbi import Func, Param, Phase
+from emtdb.tdb.tdbmgr import ParsedData
 
 log = logging.getLogger(__name__)
 
 
 class QhaData(TypedDict):
     name: str
-    state: str
     structure: dict[str, Any]
-    bulk_modulus_dft_GPa: float  # DFT E0 GPa
-    volume_EOS: float  # EOS
-    temperatures_K: list[float]  # T K
-    thermal_expansion_t: list[float]  # K^(-1)
-    bulk_modulus_GPa_t: list[float]  # B(T) GPa
-    heat_capp_J_mol_K_t: list[float]  # Cp(T) J/mol/K
-    gibbs_t: list[float]  # G(T)
-    gruneisen_t: list[float]  # γ(T)
-    volume_t: list[float]  # V(T)
-    energy_kJ_mol_t: list[float]  # F(V,T) kJ/mol
-    energy0_kJ_mol_t: list[float]  # E0(T) kJ/mol
-    entropy_v_t: list[list[float]]  # S(V,T)
-    heat_capp_J_mol_K_v_t: list[list[float]]  # Cv(V,T) J/mol/K
-    helmholtz_v_t: list[list[float]]  # A(V,T)
+    bulk_modulus: float  # DFT E0 GPa
+    volumes: float  # EOS
+    temperatures: list[float]  # T K
+    thermal_expansion: list[float]  # K^(-1)
+    bulk_modulus_temperature: list[float]  # B(T) GPa
+    heat_capacity_p_numerical: list[float]  # Cp(T) J/mol/K
+    gibbs_temperature: list[float]  # G(T)
+    gruneisen_temperature: list[float]  # γ(T)
+    volume_temperature: list[float]  # V(T)
+    free_energies: list[float]  # F(V,T) kJ/mol
+    deformation_energies: list[float]  # E0(T) kJ/mol
+    entropies: list[list[float]]  # S(V,T)
+    heat_capacities: list[list[float]]  # Cv(V,T) J/mol/K
+    helmholtz_volume: list[list[float]]  # A(V,T)
 
 
 # 原来的E-V.dat, 即DFT静态能量E0(V), 近似于 energy_kJ_mol_t[0]
@@ -329,36 +330,39 @@ class GTFitter:
         """
         fit_results = sorted(fit_results, key=lambda x: (not x["is_ser"], x["name"]))
         output = Path(output) if isinstance(output, str) else output
-        
+
         # Set maximum number of subplots per image
         max_subplots_per_image = 64  # 8x8 grid
-        
+
         # Calculate number of batches needed
         num_fits = len(fit_results)
         num_batches = (num_fits + max_subplots_per_image - 1) // max_subplots_per_image
-        
+
         log.info(f"Plotting {num_fits} fits in {num_batches} batches")
-        
+
         # Process each batch
         for batch_idx in range(num_batches):
             # Get the fits for this batch
             start_idx = batch_idx * max_subplots_per_image
             end_idx = min((batch_idx + 1) * max_subplots_per_image, num_fits)
             batch_fits = fit_results[start_idx:end_idx]
-            
+
             # Calculate grid size for this batch
             num_in_batch = len(batch_fits)
             grid_size = int(np.ceil(np.sqrt(num_in_batch)))
-            fig, axes = plt.subplots(grid_size, grid_size, figsize=(grid_size * 8, grid_size * 8))
+            fig, axes = plt.subplots(
+                grid_size, grid_size, figsize=(grid_size * 8, grid_size * 8)
+            )
             if grid_size == 1:
                 axes = np.array([axes])
-            
+
             # Generate output filename for this batch
-            if num_batches > 1:
-                batch_output = output.parent / f"{output.stem}_batch{batch_idx + 1}{output.suffix}"
-            else:
-                batch_output = output
-            
+            batch_output = (
+                output.parent / f"{output.stem}_batch{batch_idx + 1}{output.suffix}"
+                if num_batches > 1
+                else output
+            )
+
             # Plot fits for this batch
             for ax, res in tqdm(
                 zip(axes.flatten(), batch_fits),
@@ -387,7 +391,7 @@ class GTFitter:
             # Hide unused subplots
             for ax in axes.flatten()[num_in_batch:]:
                 ax.axis("off")
-            
+
             plt.tight_layout()
             plt.savefig(batch_output)
             plt.close(fig)

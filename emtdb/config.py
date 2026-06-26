@@ -1,3 +1,7 @@
+"""
+EM-TDB - Configuration file for the EM-TDB command-line interface.
+"""
+
 VERSION = "0.4.0"
 
 DB_CHOICES = ["elem", "func", "phase", "param", "tdb"]

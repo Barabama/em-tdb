@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import tempfile
 
-from src.cli import (
+from emtdb.cli import (
     cmd_parse,
     cmd_import,
     cmd_export,
@@ -14,8 +14,8 @@ from src.cli import (
     cmd_fit,
     create_parser,
 )
-from src.tdb.tdbi import ThermoDBI
-from src.tdb.tdbmgr import TDBManager
+from emtdb.tdb import ThermoDBI
+from emtdb.tdb import TDBManager
 
 
 @pytest.fixture
