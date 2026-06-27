@@ -57,13 +57,13 @@ class FitResult(TypedDict):
     phase: str
     is_ser: bool
     expression: str
-    params: list
+    params: list[float]
     r2: float
     data: pd.DataFrame | None
 
 
 class GTFitter:
-    def __init__(self, phase_metrics: dict[str, tuple]):
+    def __init__(self, phase_metrics: dict[str, tuple[int]]):
         self.formula = "+A+B*T+C*T*LN(T)+D*T**2+E*T**3+F*T**(-1)"
         self.phase_metrics = phase_metrics
         self.func_map = {
@@ -120,7 +120,7 @@ class GTFitter:
         data["G"] = data["G"] * 96485 / atom_num  # F=eNa=96485(C/mol)
         return data
 
-    def _fit_data(self, data: pd.DataFrame) -> tuple[list, float]:
+    def _fit_data(self, data: pd.DataFrame) -> tuple[list[float], float]:
         """Fit the Gibbs-Temperature data.
 
         Args:
@@ -278,12 +278,12 @@ class GTFitter:
         struct = dict(qha_data["structure"])
         atoms = struct.get("sites", [])
         atom_num = len(atoms) or 1
-        atom_num = atom_num / 2 if phase == "HCP" else atom_num  # HCP has half atoms
+        atom_num = atom_num // 2 if phase == "HCP" else atom_num  # HCP has half atoms
         atom_num = 1 if len(set(elems)) == 1 else atom_num  # single element
         log.info(f"Processing {name} with {atom_num} atoms")
 
-        temps = qha_data["temperatures_K"]
-        gibbs = qha_data["gibbs_t"]
+        temps = qha_data["temperatures"]
+        gibbs = qha_data["gibbs_temperature"]
         min_len = min(len(temps), len(gibbs))
         gt_data = self._read_json(temps[:min_len], gibbs[:min_len], atom_num)
 
@@ -409,6 +409,7 @@ class GTFitter:
         funcs: list[Func] = []
         phases: list[Phase] = []
         params: list[Param] = []
+        func_prefix = "GHSER"
 
         fit_results = [f for f in fit_results if f["data"] is not None]
         ser_groups = {
@@ -421,9 +422,9 @@ class GTFitter:
 
         # Get ser functions with deduplication
         ser_funcs = {}
-        for f in ser_groups.get(True, []):
-            elem = f"{f['elements'][0]:2s}"
-            func_name = f"SER_{elem}"
+        for fit in ser_groups.get(True, []):
+            elem = fit['elements'][0].ljust(2, fit['elements'][0][-1])
+            func_name = f"{func_prefix}{elem}"
             # Only keep the first occurrence of each function name
             if func_name not in ser_funcs:
                 ser_funcs[func_name] = Func(
@@ -431,7 +432,7 @@ class GTFitter:
                     elem=elem,
                     temp_start=1.0,
                     temp_end=6000.0,
-                    expression=f["expression"],
+                    expression=fit["expression"],
                     is_continued="N",
                 )
         funcs = list(ser_funcs.values())
@@ -451,7 +452,7 @@ class GTFitter:
             # The first metrics would be used to define the stoichiometry
             stoichiometry = set(tuple(f["metrics"]) for f in fits).pop()
             components = [
-                ",".join(sorted(set(f"{f['elements'][i]:2s}" for f in fits)))
+                ",".join(sorted(set(f"{fit['elements'][i]}"for fit in fits)))
                 for i in range(len(stoichiometry))
             ]
             phases.append(
@@ -465,10 +466,11 @@ class GTFitter:
             )
 
             # Get the parameters
-            for f in fits:
-                elems = [f"{e:2s}" for e in f["elements"]]
+            for fit in fits:
+                elems = [e for e in fit["elements"]]
                 ser_expr = "".join(
-                    f"-{stoichiometry[i]}*SER_{elems[i]}#" for i in range(len(elems))
+                    f"-{stoichiometry[i]}*{func_prefix}{elems[i].ljust(2, elems[i][-1])}#"
+                    for i in range(len(elems))
                 )
                 params.append(
                     Param(
@@ -480,7 +482,7 @@ class GTFitter:
                         temp_start=1.0,
                         temp_end=6000.0,
                         tdb=tdb_name,
-                        expression=f["expression"] + ser_expr,
+                        expression=fit["expression"] + ser_expr,
                         is_continued="N",
                     )
                 )

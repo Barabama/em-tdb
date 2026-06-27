@@ -1,6 +1,6 @@
 [project]
 name = "mpea-tdb-fit"
-version = "0.4.0"
+version = "0.5.0"
 description = "A tool for managing Multi-Principle Element Alloys End-Member Thermodynamic Database files and fitting Phonopy Gibbs-Temperature data."
 authors = [
     { name = "Barabama", email = "barabama@qq.com" },
@@ -9,11 +9,10 @@ maintainers = [
     { name="Wu Bo", email="wubo@fzu.edu.cn" },
 ]
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -44,3 +43,6 @@ Repository = "https://gitee.com/wubo-movers/mpea-tdb-fit.git"
 [build-system]
 requires = ["setuptools>=70", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["emtdb*"]

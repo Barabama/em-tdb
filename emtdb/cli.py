@@ -75,7 +75,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         log.error(f"Error importing {tdb_file} into db {db_path}: {e}")
         return 1
     finally:
-        del tdb_mgr
+        tdb_mgr.db.close()
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -92,7 +92,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         log.error(f"Error exporting TDB '{tdb_name}' from {db_path}: {e}")
         return 1
     finally:
-        del tdb_mgr
+        tdb_mgr.db.close()
 
 
 def cmd_fit(args: argparse.Namespace) -> int:
@@ -138,7 +138,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
         log.error(f"Failed to fit {tdb_name} from {data_dir}: {e}")
         return 1
     finally:
-        del tdb_mgr
+        tdb_mgr.db.close()
 
 
 def cmd_list(args: argparse.Namespace) -> int:

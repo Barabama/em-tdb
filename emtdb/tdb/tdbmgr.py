@@ -74,7 +74,7 @@ class TDBParser:
             ),
             (
                 "X",
-                rf"{digital}\*([^#\+\-][A-Za-z]+#)",
+                rf"{digital}\*([^#\+\-][A-Za-z\_]+#)",
                 lambda m: f"{float(m.group(1))}*{m.group(2)}",
             ),
         ]
@@ -105,6 +105,28 @@ class TDBParser:
             s298=float(s298),
         )
 
+    # Known element symbols for extracting element from function names.
+    # Suffix match (longest first): SERFE → FE, GHSERCR → CR, GHCPNI → NI
+    _KNOWN_ELEMENTS = frozenset({
+        "AL", "CO", "CR", "CU", "FE", "HF", "MN", "MO", "NB", "NI",
+        "RE", "TA", "TI", "V", "W", "ZR",
+        "C", "N", "O", "B", "SI", "P", "S", "SN", "H", "VA",
+    })
+
+    @classmethod
+    def _extract_elem(cls, func_name: str) -> str:
+        """Extract element symbol from a function name suffix.
+
+        Try 3-char, then 2-char, then 1-char suffixes against known elements.
+        Returns empty string if no match.
+        """
+        upper = func_name.upper()
+        for l in (3, 2, 1):
+            suffix = upper[-l:]
+            if suffix in cls._KNOWN_ELEMENTS:
+                return suffix
+        return ""
+
     def _parse_func(self, line: str) -> Func | None:
         """Parse FUNCTION.
 
@@ -114,19 +136,30 @@ class TDBParser:
             Func | None: Func dict or None
         """
         match = re.match(
-            r"FUNCTION\s+(\S+)\s+(\S+)\s+([^\;].+)\s*\;\s+(\S+)\s+([YN]?)\s*\!", line
+            r"FUNCTION\s+(\S+)\s+(\S+)\s+([^;]+?)(?:\s*\;\s*(\S+)\s*([YN]?)\s*\!)?\s*$",
+            line.strip(),
         )
         if not match:
             return None
         func, temp_start, expression, temp_end, is_continued = match.groups()
-        elem = func.split("SER")[1]
+        # Guard against split artifacts: temp_end must be a valid float,
+        # and continuation markers like "N" without ! are not FUNCTION lines.
+        if temp_end is not None:
+            try:
+                float(temp_end)
+            except ValueError:
+                # This is likely a continuation-split artifact (e.g., "N")
+                return None
+        elem = self._extract_elem(func)
+        if not elem:
+            return None  # skip functions without a recognizable element suffix
         return Func(
             func=str(func),
             elem=str(elem),
             temp_start=float(temp_start),
-            temp_end=float(temp_end),
-            expression=self._parse_expression(expression),
-            is_continued=str(is_continued),
+            temp_end=float(temp_end or "6000.00"),
+            expression=self._parse_expression(expression or ""),
+            is_continued=str(is_continued or "N"),
         )
 
     def _parse_param(self, line: str, tdb: str) -> Param | None:
@@ -266,7 +299,12 @@ class TDBParser:
 
         # PARAMETER
         for p in sorted(params, key=lambda x: x["param"]):
-            ex1, ex2 = p["expression"].split("*T", 1)
+            parts = p["expression"].split("*T", 1)
+            if len(parts) >= 2:
+                ex1, ex2 = parts[0], parts[1]
+            else:
+                ex1 = parts[0]
+                ex2 = ""
             if "*T**3" in ex2:
                 ex2, ex3 = ex2.split("*T**3", 1)
                 ex2 += "*T**3"
@@ -311,6 +349,9 @@ class TDBManager(TDBParser):
         merged = []
         for line in [s.strip() for s in text.split("!")]:
             line += " !"
+            # Only treat as FUNCTION/PARAMETER if line STARTS with the keyword.
+            # (Continuation lines indented with spaces may contain ; temp_end N !
+            #  but those are not independent FUNCTION/PARAMETER declarations.)
             if line.startswith("ELEMENT"):
                 if e := self._parse_elem(line):
                     elems.append(e)

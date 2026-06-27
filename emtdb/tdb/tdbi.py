@@ -8,8 +8,8 @@ CRUD operations for elements, functions, TDBs, phases, and parameters.
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, TypedDict, Union, Sequence
-
+from collections.abc import Sequence
+from typing import Any, TypedDict
 
 class Elem(TypedDict):
     elem: str
@@ -55,7 +55,7 @@ class Param(TypedDict):
     tdb: str
 
 
-AllData = Union[Elem, Func, Tdb, Phase, Param]
+AllData = Elem | Func | Tdb | Phase | Param
 
 
 class ThermoDBI:
@@ -185,8 +185,8 @@ class ThermoDBI:
     def __del__(self):
         self.close()
 
-    def __exit__(self):
-        self.__del__()
+    def __exit__(self, *args):
+        self.close()
 
     def _create(self, table: str, data: AllData):
         """Create a new record in the specified table."""
@@ -213,7 +213,7 @@ class ThermoDBI:
 
         self.cursor.executemany(sql, values)
 
-    def _read(self, table: str, queries: dict[str, Any], use_like: bool = False) -> list[dict]:
+    def _read(self, table: str, queries: dict[str, Any], use_like: bool = False) -> list[dict[Any, Any]]:
         """Read records from the specified table."""
         if not queries:
             values = ()
