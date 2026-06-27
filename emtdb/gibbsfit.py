@@ -397,6 +397,66 @@ class GTFitter:
             plt.close(fig)
             log.info(f"Saved batch {batch_idx + 1} to {batch_output}")
 
+    def export_json(self, fit_results: list[FitResult], output: Path | str) -> None:
+        """Export fit results to JSON file.
+
+        Each entry includes name, elements, phase, r2, expression,
+        params as {A,B,C,D,E,F}, and raw data as {T:[...], G:[...]}.
+        """
+        serializable = []
+        for fr in fit_results:
+            entry = {
+                "name": fr["name"],
+                "elements": fr["elements"],
+                "metrics": fr["metrics"],
+                "phase": fr["phase"],
+                "is_ser": fr["is_ser"],
+                "expression": fr["expression"],
+                "params": {
+                    "A": fr["params"][0],
+                    "B": fr["params"][1],
+                    "C": fr["params"][2],
+                    "D": fr["params"][3],
+                    "E": fr["params"][4],
+                    "F": fr["params"][5],
+                },
+                "r2": fr["r2"],
+                "data": fr["data"].to_dict(orient="list")
+                if fr["data"] is not None
+                else None,
+            }
+            serializable.append(entry)
+        with open(output, "w", encoding="utf-8") as f:
+            json.dump(serializable, f, indent=2)
+        log.info("Exported %d fit results to %s", len(fit_results), output)
+
+    def export_csv(self, fit_results: list[FitResult], output: Path | str) -> None:
+        """Export fit results to CSV file (flat columns, no raw data)."""
+        import csv
+
+        fieldnames = ["name", "phase", "elements", "r2", "A", "B", "C", "D", "E", "F"]
+        rows = []
+        for fr in fit_results:
+            rows.append(
+                {
+                    "name": fr["name"],
+                    "phase": fr["phase"],
+                    "elements": " ".join(fr["elements"]),
+                    "r2": fr["r2"],
+                    "A": fr["params"][0],
+                    "B": fr["params"][1],
+                    "C": fr["params"][2],
+                    "D": fr["params"][3],
+                    "E": fr["params"][4],
+                    "F": fr["params"][5],
+                }
+            )
+        with open(output, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        log.info("Exported %d fit results to %s", len(fit_results), output)
+
     def fit2db(self, fit_results: list[FitResult], tdb_name: str) -> ParsedData:
         """Convert fit results to objects for ThermoDB.
 

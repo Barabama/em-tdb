@@ -111,6 +111,12 @@ def cmd_fit(args: argparse.Namespace) -> int:
         log.info(f"Plotting fit results to {img_path}...")
         fitter.plot_fits(results, img_path)
 
+        if args.output_json:
+            fitter.export_json(results, args.output_json)
+
+        if args.output_csv:
+            fitter.export_csv(results, args.output_csv)
+
         parsed = fitter.fit2db(results, tdb_name)
 
         log.info(f"Saving {len(parsed.funcs)} functions...")
@@ -136,6 +142,60 @@ def cmd_fit(args: argparse.Namespace) -> int:
     except Exception as e:
         log.error(traceback.format_exc())
         log.error(f"Failed to fit {tdb_name} from {data_dir}: {e}")
+        return 1
+    finally:
+        tdb_mgr.db.close()
+
+
+def cmd_subset(args: argparse.Namespace) -> int:
+    """Extract a TDB subset containing only specified elements."""
+    tdb_file = Path(args.tdb_file)
+    tdb_name = args.tdb_name or tdb_file.stem
+    output = args.output or f"{tdb_name}-subset.tdb"
+    db_path = args.db or ":memory:"
+    try:
+        tdb_mgr = TDBManager(ThermoDBI(":memory:"))
+        parsed = tdb_mgr.parse_tdb(tdb_file, tdb_name)
+        log.info(
+            f"Parsed {tdb_file}: "
+            f"{len(parsed.elems)} elements, {len(parsed.funcs)} functions, "
+            f"{len(parsed.phases)} phases, {len(parsed.params)} parameters"
+        )
+
+        from emtdb.tdb.tdbmgr import filter_parsed_data
+
+        elements = set(args.elem)
+        filtered = filter_parsed_data(parsed, elements)
+        log.info(
+            f"Filtered to {len(filtered.elems)} elements, {len(filtered.funcs)} functions, "
+            f"{len(filtered.phases)} phases, {len(filtered.params)} parameters"
+        )
+
+        if not filtered.params:
+            log.error("No parameters match the specified elements")
+            return 1
+
+        # Import to DB then export
+        if db_path != ":memory:":
+            tdb_mgr.db.close()
+            import os
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            tdb_mgr = TDBManager(ThermoDBI(db_path))
+
+        tdb_mgr.save_elements(filtered.elems)
+        tdb_mgr.save_functions(filtered.funcs)
+        tdb_mgr.import_tdb(
+            filtered.phases, filtered.params, tdb_name,
+            desc=f"subset from {tdb_file.name}",
+            ver="1.0",
+        )
+        tdb_mgr.export_tdb(tdb_name, output)
+        log.info(f"Exported subset to {output}")
+        return 0
+    except Exception as e:
+        log.error(traceback.format_exc())
+        log.error(f"Error creating subset: {e}")
         return 1
     finally:
         tdb_mgr.db.close()
@@ -329,6 +389,54 @@ def create_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional logical tdb name in DB (default: data_dir name)",
     )
+    p_fit.add_argument(
+        "--output-json",
+        type=str,
+        default="",
+        help="Output JSON file path for fit results (includes R², params A-F, raw data)",
+    )
+    p_fit.add_argument(
+        "--output-csv",
+        type=str,
+        default="",
+        help="Output CSV file path for fit results (flat columns: name/phase/elements/r2/A/B/C/D/E/F)",
+    )
+
+    # Subset ------------------------------------------------
+    p_subset = subparsers.add_parser(
+        "subset",
+        help="Extract TDB subset containing only specified elements",
+    )
+    p_subset.add_argument(
+        "--tdb-file", "-f",
+        type=str,
+        required=True,
+        help="Input TDB file path",
+    )
+    p_subset.add_argument(
+        "--elem", "-e",
+        type=str,
+        nargs="+",
+        required=True,
+        metavar="ELEM",
+        help="Element symbols to keep (e.g. FE CR NI)",
+    )
+    p_subset.add_argument(
+        "--db",
+        default="",
+        help="Optional database path (default: in-memory)",
+    )
+    p_subset.add_argument(
+        "--tdb-name", "-n",
+        default="",
+        help="Optional logical tdb name (default: input filename)",
+    )
+    p_subset.add_argument(
+        "--output", "-o",
+        type=str,
+        default="",
+        help="Output TDB file path (default: {tdb-name}-subset.tdb)",
+    )
 
     # List ------------------------------------------------
     p_list = subparsers.add_parser(
@@ -437,6 +545,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
     p_delete.set_defaults(func=cmd_delete)
     p_fit.set_defaults(func=cmd_fit)
+    p_subset.set_defaults(func=cmd_subset)
 
     return parser
 

@@ -3,12 +3,62 @@ EM-TDB - Manager for parsing and managing thermodynamic database files.
 """
 
 import re
+import logging
 
 from pathlib import Path
 from itertools import groupby
 from dataclasses import dataclass, asdict
 
+log = logging.getLogger(__name__)
+
 from emtdb.tdb import Elem, Func, Tdb, Phase, Param, ThermoDBI
+
+
+def filter_parsed_data(parsed: "ParsedData", elements: set[str]) -> "ParsedData":
+    """Filter ParsedData to keep only entries related to the given elements.
+
+    Args:
+        parsed: Original ParsedData.
+        elements: Set of element symbols to keep (e.g. {"FE", "CR", "NI"}).
+    Returns:
+        ParsedData: Filtered copy containing only matching entries.
+    """
+    elem_set = set(e.upper() for e in elements)
+    if not elem_set:
+        raise ValueError("At least one element must be specified")
+
+    # Elements
+    elems = [e for e in parsed.elems if e["elem"] in elem_set]
+
+    # Functions
+    funcs = [f for f in parsed.funcs if f["elem"] in elem_set]
+
+    # Parameters: keep if ALL component elements are in the target set
+    def param_matches(p: Param) -> bool:
+        for part in p["components"].split(":"):
+            for e in part.split(","):
+                if e not in elem_set:
+                    return False
+        return True
+
+    params = [p for p in parsed.params if param_matches(p)]
+
+    # Phases: trim constituents per sublattice; skip phase if sublattice empty
+    phases = []
+    param_keys = {(p["phase"], p["components"]) for p in params}
+    kept_phases = {p[0] for p in param_keys}
+    for phase in parsed.phases:
+        parts = phase["components"].split(":")
+        filtered_parts = []
+        for part in parts:
+            filtered = [e for e in part.split(",") if e in elem_set]
+            if filtered:
+                filtered_parts.append(",".join(sorted(set(filtered))))
+        if len(filtered_parts) == len(parts):
+            phase["components"] = ":".join(filtered_parts)
+            phases.append(phase)
+
+    return ParsedData(elems=elems, funcs=funcs, phases=phases, params=params, tdb=parsed.tdb)
 
 
 @dataclass
@@ -464,6 +514,23 @@ class TDBManager(TDBParser):
         lines = []
         with self.db.conn:
             elems = self.db.read_element()
+            if not elems:
+                log.info(
+                    "No elements found; auto-importing DEFAULT_ELEMS from config..."
+                )
+                from emtdb.config import DEFAULT_ELEMS
+
+                parsed = []
+                for line in DEFAULT_ELEMS.strip().splitlines():
+                    line = line.strip()
+                    if not line.startswith("ELEMENT"):
+                        continue
+                    if not line.endswith("!"):
+                        line += " !"
+                    if e := self._parse_elem(line):
+                        parsed.append(e)
+                self.save_elements(parsed)
+                elems = self.db.read_element()
             funcs = self.db.read_function()
             tdb_data = self.db.read_tdb(tdb=tdb_name)[0]
             phases = self.db.read_phase(tdb=tdb_name)

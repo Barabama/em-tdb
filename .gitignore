@@ -41,3 +41,4 @@ tmp/
 *.tmp
 backup_old/
 *.json
+output

@@ -1,5 +1,5 @@
 [project]
-name = "mpea-tdb-fit"
+name = "em-tdb"
 version = "0.5.0"
 description = "A tool for managing Multi-Principle Element Alloys End-Member Thermodynamic Database files and fitting Phonopy Gibbs-Temperature data."
 authors = [
@@ -37,8 +37,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://gitee.com/wubo-movers/mpea-tdb-fit"
-Repository = "https://gitee.com/wubo-movers/mpea-tdb-fit.git"
+Homepage = "https://gitee.com/wubo-movers/em-tdb"
+Repository = "https://gitee.com/wubo-movers/em-tdb.git"
 
 [build-system]
 requires = ["setuptools>=70", "wheel"]
