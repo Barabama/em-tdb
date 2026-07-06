@@ -26,6 +26,39 @@ from emtdb.tdb.tdbmgr import ParsedData
 
 log = logging.getLogger(__name__)
 
+# ── constants ───────────────────────────────────────────────────────────
+F_CONST = 96485  # Faraday constant (C/mol)
+T_MIN, T_MAX = 100, 2900
+
+_ELEM_TOKEN_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+ELEMENTS = frozenset({
+    "AC", "AG", "AL", "AM", "AR", "AS", "AT", "AU",
+    "B", "BA", "BE", "BH", "BI", "BK", "BR",
+    "C", "CA", "CD", "CE", "CF", "CL", "CM", "CN", "CO", "CR", "CS", "CU",
+    "DB", "DS", "DY",
+    "ER", "ES", "EU",
+    "F", "FE", "FL", "FM", "FR",
+    "GA", "GD", "GE",
+    "H", "HE", "HF", "HG", "HO", "HS",
+    "I", "IN", "IR",
+    "K", "KR",
+    "LA", "LI", "LR", "LU", "LV",
+    "MC", "MD", "MG", "MN", "MO", "MT",
+    "N", "NA", "NB", "ND", "NE", "NH", "NI", "NO", "NP",
+    "O", "OG", "OS",
+    "P", "PA", "PB", "PD", "PM", "PO", "PR", "PT", "PU",
+    "RA", "RB", "RE", "RF", "RG", "RH", "RN", "RU",
+    "S", "SB", "SC", "SE", "SG", "SI", "SM", "SN", "SR",
+    "TA", "TB", "TC", "TE", "TH", "TI", "TL", "TM", "TS",
+    "U",
+    "V", "VA",
+    "W",
+    "XE",
+    "Y", "YB",
+    "ZN", "ZR",
+})
+
 
 class QhaData(TypedDict):
     name: str
@@ -40,7 +73,7 @@ class QhaData(TypedDict):
     gruneisen_temperature: list[float]  # γ(T)
     volume_temperature: list[float]  # V(T)
     free_energies: list[float]  # F(V,T) kJ/mol
-    deformation_energies: list[float]  # E0(T) kJ/mol
+    deformation_energies: list[float]  # E0(V) eV
     entropies: list[list[float]]  # S(V,T)
     heat_capacities: list[list[float]]  # Cv(V,T) J/mol/K
     helmholtz_volume: list[list[float]]  # A(V,T)
@@ -60,6 +93,64 @@ class FitResult(TypedDict):
     params: list[float]
     r2: float
     data: pd.DataFrame | None
+
+
+def _parse_folder_name(name: str) -> dict | None:
+    """Parse subfolder name → {phase, elements, atom_num}.
+
+    Supports:
+        BCC-Al-Al-2      → phase=BCC,  elems=[Al, Al], atom_num=2
+        BCC-TiNb-2       → phase=BCC,  elems=[Ti, Nb], atom_num=2
+        BCC-Ta2-Al-8     → phase=BCC,  elems=[Ta, Al], atom_num=8
+        SER-Nb-2atoms    → phase=SER,  elems=[Nb],    atom_num=2
+        OTH-Al-Ti-Nb-4   → phase=OTH,  elems=[Al,Ti,Nb], atom_num=4
+        FCC-Fe-Mn        → phase=FCC,  elems=[Fe, Mn], atom_num=1
+
+    Returns None on parse failure.
+    """
+    parts = name.split("-")
+    if len(parts) < 2:
+        return None
+    phase = parts[0].upper()
+
+    # Walk tokens from right to extract atom_num first
+    atom_num = None
+    elem_tokens = []
+    for part in reversed(parts[1:]):
+        if atom_num is None:
+            m = re.match(r"^(\d+)(?:atoms?)?$", part)
+            if m:
+                atom_num = int(m.group(1))
+                continue
+        elem_tokens.insert(0, part)
+
+    if atom_num is None:
+        atom_num = 1
+
+    # Parse element tokens
+    elements = []
+    for tok in elem_tokens:
+        if tok.upper() in ELEMENTS:
+            elements.append(tok.upper())
+        else:
+            pos = 0
+            local = []
+            while pos < len(tok):
+                m2 = _ELEM_TOKEN_RE.match(tok, pos)
+                if m2 is None:
+                    return None
+                sym = m2.group(1).upper()
+                if sym not in ELEMENTS:
+                    return None
+                local.append(sym)
+                pos = m2.end()
+            if not local:
+                return None
+            elements.extend(local)
+
+    if not elements:
+        return None
+    return {"phase": phase, "elements": elements, "atom_num": atom_num}
 
 
 class GTFitter:
@@ -101,9 +192,9 @@ class GTFitter:
             pd.DataFrame: DataFrame with T and G columns.
         """
         data = pd.read_csv(file, sep="\\s+", skiprows=1, header=None, names=["T", "G"])
-        data = data[(data["T"] >= 100) & (data["T"] <= 2900)]
-        data["G"] = data["G"] * 96485 / atom_num  # F=eNa=96485(C/mol)
-        return data
+        data = data[(data["T"] >= T_MIN) & (data["T"] <= T_MAX)]
+        data["G"] = data["G"] * F_CONST / atom_num  # F=eNa=96485(C/mol)
+        return data.reset_index(drop=True)
 
     def _read_json(self, x: list[float], y: list[float], atom_num: int) -> pd.DataFrame:
         """Read the atomate QHA Flow json data.
@@ -116,8 +207,8 @@ class GTFitter:
             pd.DataFrame: DataFrame with T and G columns.
         """
         data = pd.DataFrame({"T": x, "G": y})
-        data = data[(data["T"] >= 100) & (data["T"] <= 2900)]
-        data["G"] = data["G"] * 96485 / atom_num  # F=eNa=96485(C/mol)
+        data = data[(data["T"] >= T_MIN) & (data["T"] <= T_MAX)]
+        data["G"] = data["G"] * F_CONST / atom_num  # F=eNa=96485(C/mol)
         return data
 
     def _fit_data(self, data: pd.DataFrame) -> tuple[list[float], float]:
@@ -130,7 +221,10 @@ class GTFitter:
         """
         x = data["T"].values
         y = data["G"].values
-        params, _ = curve_fit(self._fit_func, x, y)
+        try:
+            params, _ = curve_fit(self._fit_func, x, y, maxfev=5000)
+        except Exception:
+            return [], 0.0
         residuals = y - self._fit_func(x, *params)
         ss_res = np.sum(residuals**2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
@@ -177,6 +271,10 @@ class GTFitter:
             if i >= 1 and 1 - r2 < 1e-3:  # stop if r2 is already high
                 break
         log.info(f"{name} {phase} {elems} {metrics} {best_params} {best_r2:.3f}")
+        if not best_params:
+            log.warning(f"No valid fit for {name}")
+            return []
+
         results = [
             FitResult(
                 name=name,
@@ -216,26 +314,23 @@ class GTFitter:
             list: List of FitResult objects.
         """
         folder = Path(folder) if isinstance(folder, str) else folder
-        files = glob.glob(str(folder.joinpath("**", "gibbs-temperature.dat")), recursive=True)
+        files = glob.glob(str(folder.joinpath("**", "gibbs[_-]temperature.dat")), recursive=True)
         if len(files) <= 0:
-            raise FileNotFoundError(f"gibbs-temperature.dat not found in {folder}")
+            raise FileNotFoundError(f"gibbs-temperature.dat / gibbs_temperature.dat not found in {folder}")
         file = files[0]
         name = folder.name
-        parts = name.split("-")
-        if len(parts) < 2:
+
+        parsed = _parse_folder_name(name)
+        if parsed is None:
             raise ValueError(f"Invalid name format: {name}")
-        phase = parts[0]
+        phase = parsed["phase"]
         if phase not in self.phase_metrics:
             raise ValueError(f"{phase} not valid in phase_metrics")
         metrics = self.phase_metrics[phase]
         m_sum = sum(m for m in metrics)
         metrics = [m / m_sum for m in metrics]
-        elems = parts[1 : 1 + len(metrics)]
-
-        if match := re.search(r"\-(\d+)(?:atoms?)?", name):
-            atom_num = int(match.group(1))
-        else:
-            atom_num = 1
+        elems = parsed["elements"]
+        atom_num = parsed["atom_num"]
         log.info(f"Processing {name} with {atom_num} atoms")
 
         gt_data = self._read_dat(Path(file), atom_num)
@@ -260,21 +355,24 @@ class GTFitter:
             raise FileNotFoundError(f"{json_path} does not exist")
         with open(json_path, "r", encoding="utf-8") as jf:
             qha_data = QhaData(**json.load(jf))
-        if qha_data.get("state", "failed") == "failed":
+        if qha_data.get("state") == "failed":
             raise ValueError(f"{json_path} is failed")
 
         name = folder.name
-        parts = name.split("-")
-        if len(parts) < 2:
+
+        parsed = _parse_folder_name(name)
+        if parsed is None:
             raise ValueError(f"Invalid name format: {name}")
-        phase = parts[0]
+        phase = parsed["phase"]
         if phase not in self.phase_metrics:
             raise ValueError(f"Invalid phase: {phase}")
         metrics = self.phase_metrics[phase]
         m_sum = sum(m for m in metrics)
         metrics = [m / m_sum for m in metrics]
-        elems = parts[1 : 1 + len(metrics)]
+        elems = parsed["elements"]
 
+        # JSON-specific atom_num logic: use structure info when available,
+        # then apply HCP / single-element corrections on top
         struct = dict(qha_data["structure"])
         atoms = struct.get("sites", [])
         atom_num = len(atoms) or 1

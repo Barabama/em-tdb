@@ -73,10 +73,10 @@ def _find_gibbs_dat(filepath: Path) -> Path:
     if filepath.is_file():
         return filepath
     if filepath.is_dir():
-        hits = sorted(filepath.rglob("gibbs-temperature.dat"))
+        hits = sorted(filepath.rglob("gibbs[_-]temperature.dat"))
         if hits:
             return hits[0]
-    raise FileNotFoundError(f"No gibbs-temperature.dat found in or under {filepath}")
+    raise FileNotFoundError(f"No gibbs-temperature.dat / gibbs_temperature.dat found in or under {filepath}")
 
 
 def _read_dat(filepath: Path, atom_num: int) -> pd.DataFrame:
@@ -345,12 +345,16 @@ def run_batch(args):
             skipped.append((subdir.name, "no gibbs-temperature.dat"))
             continue
 
-        result = fit_one(dat_path, subdir.name, phase, elems, metrics, atom_num)
-        if result["params"]:
-            for r in _expand_results(
-                result, subdir.name, phase, elems, metrics, atom_num
-            ):
-                results.append(r)
+        try:
+            result = fit_one(dat_path, subdir.name, phase, elems, metrics, atom_num)
+            if result["params"]:
+                for r in _expand_results(
+                    result, subdir.name, phase, elems, metrics, atom_num
+                ):
+                    results.append(r)
+        except Exception as e:
+            skipped.append((subdir.name, str(e)))
+            continue
 
     print(f"\nFitted: {len(results)} result(s)")
     for r in results:
@@ -374,34 +378,45 @@ def run_batch(args):
     return 0 if results else 1
 
 
-def _plot_batch(results, root):
-    """Grid-plot all batch results."""
+def _plot_batch(results, root, max_subplots_per_image=64):
+    """Grid-plot all batch results, splitting into multiple images if needed."""
     n = len(results)
-    grid = int(np.ceil(np.sqrt(n)))
-    fig, axes = plt.subplots(
-        grid, grid, figsize=(grid * 5, grid * 4), squeeze=False
-    )
-    for ax, r in zip(axes.flatten(), results):
-        d = r["data"]
-        if d is not None and r["params"]:
-            ax.plot(d["T"], d["G"], "o", ms=2, label="Data")
-            ax.plot(
-                d["T"],
-                _fit_func(d["T"], *r["params"]),
-                "-",
-                lw=1.5,
-                label=f"R²={r['r2']:.4f}",
-            )
-        ax.set_title(r["name"], fontsize=7)
-        ax.tick_params(labelsize=6)
-        ax.legend(fontsize=5)
-    for ax in axes.flatten()[n:]:
-        ax.axis("off")
-    fig.tight_layout()
-    out = root / "fit_results.png"
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"\n  [plot] Saved to {out}")
+    num_batches = (n + max_subplots_per_image - 1) // max_subplots_per_image
+
+    for batch_idx in range(num_batches):
+        start = batch_idx * max_subplots_per_image
+        end = min(start + max_subplots_per_image, n)
+        batch = results[start:end]
+        n_batch = len(batch)
+
+        grid = int(np.ceil(np.sqrt(n_batch)))
+        fig, axes = plt.subplots(
+            grid, grid, figsize=(grid * 5, grid * 4), squeeze=False
+        )
+        for ax, r in zip(axes.flatten(), batch):
+            d = r["data"]
+            if d is not None and r["params"]:
+                ax.plot(d["T"], d["G"], "o", ms=2, label="Data")
+                ax.plot(
+                    d["T"],
+                    _fit_func(d["T"], *r["params"]),
+                    "-",
+                    lw=1.5,
+                    label=f"R²={r['r2']:.4f}",
+                )
+            ax.set_title(r["name"], fontsize=7)
+            ax.tick_params(labelsize=6)
+            ax.legend(fontsize=5)
+        for ax in axes.flatten()[n_batch:]:
+            ax.axis("off")
+        fig.tight_layout()
+        if num_batches > 1:
+            out = root / f"fit_results_batch{batch_idx + 1}.png"
+        else:
+            out = root / "fit_results.png"
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
+        print(f"  [plot] Saved to {out}")
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────
