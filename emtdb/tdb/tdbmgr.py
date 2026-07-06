@@ -82,58 +82,50 @@ class ParsedData:
 
 
 class TDBParser:
+    # Match one term in a TDB addition-chain expression.
+    #
+    #   (±) number [±] (*T[*LN(T)|**2|**3|**(-1)])   — temperature terms
+    #   (±) number [±] (*FUNCNAME#)                    — function reference
+    #
+    # Groups: (1) sign  (2) mantissa  (3) exponent  (4) suffix (incl. leading *)
+    _TERM_RE = re.compile(
+        r"([+-]?)"
+        r"(\d+(?:\.\d*)?|\.\d+)"
+        r"((?:[Ee][+-]?\d+)?)"
+        r"((?:\*(?:T(?:\*?(?:LN\(T\)|\*\*(?:2|3|\(-1\))))?|[A-Za-z_][A-Za-z0-9_]*\#)))?"
+    )
+
     def _parse_expression(self, line: str) -> str:
-        """Parse expression.
+        """Parse TDB expression string into normalised form.
+
+        Each coefficient is reformatted to ``+E`` scientific notation;
+        function-reference coefficients (e.g. ``-0.5*GHSERAL#``) keep
+        a plain decimal format.  Term order is preserved exactly.
 
         Args:
-            line: Expression string
+            line: Expression string (e.g. ``A+B*T+C*T*LN(T)...-w*FUNC#``)
         Returns:
-            str: Parsed expression string
+            str: Normalised expression string.
         """
-        digital = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)"
-        pattern_map = [
-            (
-                "A",
-                rf"(?<!\*){digital}(?=\+|\-)",
-                lambda m: f"{float(m.group(1)):+E}",
-            ),
-            (
-                "B",
-                rf"{digital}\*T(?!\*)",
-                lambda m: f"{float(m.group(1)):+E}*T",
-            ),
-            (
-                "C",
-                rf"{digital}\*T\*LN\(T\)",
-                lambda m: f"{float(m.group(1)):+E}*T*LN(T)",
-            ),
-            (
-                "D",
-                rf"{digital}\*T\*\*2",
-                lambda m: f"{float(m.group(1)):+E}*T**2",
-            ),
-            (
-                "E",
-                rf"{digital}\*T\*\*3",
-                lambda m: f"{float(m.group(1)):+E}*T**3",
-            ),
-            (
-                "F",
-                rf"{digital}\*T\*\*\(-1\)",
-                lambda m: f"{float(m.group(1)):+E}*T**(-1)",
-            ),
-            (
-                "X",
-                rf"{digital}\*([^#\+\-][A-Za-z\_]+#)",
-                lambda m: f"{float(m.group(1))}*{m.group(2)}",
-            ),
-        ]
-        new_line = ""
-        for key, pattern, formatter in pattern_map:
-            for match in re.finditer(pattern, line):
-                new_line += formatter(match)
+        parts: list[str] = []
+        for m in self._TERM_RE.finditer(line):
+            sign = m.group(1) or ""
+            mantissa = m.group(2)
+            exponent = m.group(3) or ""
+            suffix = m.group(4) or ""
+            num = float(sign + mantissa + exponent)
 
-        return new_line
+            if suffix and not suffix.startswith("*T"):
+                # Function-reference coefficient: keep plain decimal.
+                parts.append(f"{num}{suffix}")
+            else:
+                # Temperature-dependent coefficient: normalise to scientific.
+                parts.append(f"{num:+E}{suffix}")
+
+        result = "".join(parts)
+        if result.startswith("+"):
+            result = result[1:]
+        return result
 
     def _parse_elem(self, line: str) -> Elem | None:
         """Parse ELEMENT.

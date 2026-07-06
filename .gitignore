@@ -36,9 +36,9 @@ data
 ref*
 
 # Temporary / work in progress
-temp/
-tmp/
+*temp*
+*tmp*
 *.tmp
-backup_old/
 *.json
 output
+*test*
