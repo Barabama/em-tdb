@@ -12,6 +12,7 @@ from pathlib import Path
 from emtdb.tdb import ThermoDBI
 from emtdb.tdb import TDBManager
 from emtdb.gibbsfit import GTFitter
+from emtdb.etotfit import ETotFitter
     
 from emtdb.config import VERSION, DB_CHOICES, PHASE_METRICS, DATA_TYPES
 
@@ -145,6 +146,56 @@ def cmd_fit(args: argparse.Namespace) -> int:
         return 1
     finally:
         tdb_mgr.db.close()
+
+
+def cmd_etot(args: argparse.Namespace) -> int:
+    """Fit DFT static energies (E0) from v-e.dat → TDB."""
+    data_dir = Path(args.data_dir)
+    tdb_name = args.tdb_name or data_dir.stem
+    try:
+        fitter = ETotFitter(PHASE_METRICS)
+        results = fitter.process_folders(data_dir)
+        log.info(f"Processed {len(results)} end-members")
+
+        if args.output_json:
+            fitter.export_json(results, args.output_json)
+
+        if args.output_csv:
+            fitter.export_csv(results, args.output_csv)
+
+        parsed = fitter.results_to_parsed(results, tdb_name)
+        log.info(f"Converted: {len(parsed.funcs)} functions, "
+                 f"{len(parsed.phases)} phases, {len(parsed.params)} parameters")
+
+        # Import into DB (in-memory unless --db given)
+        db_path = args.db or ":memory:"
+        tdb_mgr = TDBManager(ThermoDBI(db_path))
+
+        if parsed.funcs:
+            tdb_mgr.save_functions(parsed.funcs)
+        if parsed.phases or parsed.params:
+            tdb_mgr.import_tdb(
+                parsed.phases,
+                parsed.params,
+                parsed.tdb,
+                desc=f"fitted from {data_dir}",
+                ver=VERSION,
+            )
+
+        # Export TDB file
+        if args.output:
+            tdb_mgr.export_tdb(tdb_name, args.output)
+            log.info("Exported TDB to %s", args.output)
+        elif db_path == ":memory:":
+            output = f"{tdb_name}.tdb"
+            tdb_mgr.export_tdb(tdb_name, output)
+            log.info("Exported TDB to %s", output)
+
+        return 0
+    except Exception as e:
+        log.error(traceback.format_exc())
+        log.error(f"Failed to process {data_dir}: {e}")
+        return 1
 
 
 def cmd_subset(args: argparse.Namespace) -> int:
@@ -402,6 +453,47 @@ def create_parser() -> argparse.ArgumentParser:
         help="Output CSV file path for fit results (flat columns: name/phase/elements/r2/A/B/C/D/E/F)",
     )
 
+    # Fit E0 (etot) ------------------------------------------------
+    p_etot = subparsers.add_parser(
+        "etot",
+        help="Fit DFT static energies (E0) from v-e.dat files",
+    )
+    p_etot.add_argument(
+        "--db",
+        default="",
+        help="Optional database path (default: in-memory)",
+    )
+    p_etot.add_argument(
+        "--data-dir",
+        "-d",
+        required=True,
+        help="Directory containing end-member folders",
+    )
+    p_etot.add_argument(
+        "--tdb-name",
+        "-n",
+        default="",
+        help="Logical TDB name in DB (default: data_dir name)",
+    )
+    p_etot.add_argument(
+        "--output", "-o",
+        type=str,
+        default="",
+        help="Output TDB file path (default: {tdb-name}.tdb)",
+    )
+    p_etot.add_argument(
+        "--output-json",
+        type=str,
+        default="",
+        help="Output JSON file path for fitted E0/V0/B0 results",
+    )
+    p_etot.add_argument(
+        "--output-csv",
+        type=str,
+        default="",
+        help="Output CSV file path for fitted E0/V0/B0 results",
+    )
+
     # Subset ------------------------------------------------
     p_subset = subparsers.add_parser(
         "subset",
@@ -545,6 +637,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
     p_delete.set_defaults(func=cmd_delete)
     p_fit.set_defaults(func=cmd_fit)
+    p_etot.set_defaults(func=cmd_etot)
     p_subset.set_defaults(func=cmd_subset)
 
     return parser

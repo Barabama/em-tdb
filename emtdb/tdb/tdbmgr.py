@@ -304,10 +304,18 @@ class TDBParser:
         """
         lines = ["$ FUNCTION FUNC TEMP_START EXPRESSION TEMP_END IS_CONTINUED !"]
         for f in sorted(functions, key=lambda x: x["func"]):
-            ex1, ex2 = f["expression"].split("*T*LN(T)")
-            s1 = f"FUNCTION {f['func']:7s} {f['temp_start']:.2f} {ex1}*T*LN(T)"
-            s2 = f"    {ex2}; {f['temp_end']:.2f} {f['is_continued']:1s}"
-            lines.extend([s1, f"{s2} !"])
+            expr = f["expression"]
+            if "*T*LN(T)" in expr:
+                ex1, ex2 = expr.split("*T*LN(T)")
+                formatted = f"FUNCTION {f['func']:7s} {f['temp_start']:.2f} {ex1}*T*LN(T)"
+                cont = f"    {ex2}; {f['temp_end']:.2f} {f['is_continued']:1s}"
+            else:
+                # Constant expression (e.g. ETSERxx from etot)
+                formatted = f"FUNCTION {f['func']:7s} {f['temp_start']:.2f} {expr}; {f['temp_end']:.2f} {f['is_continued']:1s} !"
+                cont = None
+            lines.append(formatted)
+            if cont:
+                lines.append(f"{cont} !")
 
         lines.extend(["$ END FUNCTION !", ""])
         return lines
@@ -341,21 +349,30 @@ class TDBParser:
 
         # PARAMETER
         for p in sorted(params, key=lambda x: x["param"]):
-            parts = p["expression"].split("*T", 1)
-            if len(parts) >= 2:
-                ex1, ex2 = parts[0], parts[1]
+            expr = p["expression"]
+            if "*T" in expr:
+                # Polynomial expression with temperature terms
+                parts = expr.split("*T", 1)
+                if len(parts) >= 2:
+                    ex1, ex2 = parts[0], parts[1]
+                else:
+                    ex1 = parts[0]
+                    ex2 = ""
+                if "*T**3" in ex2:
+                    ex2, ex3 = ex2.split("*T**3", 1)
+                    ex2 += "*T**3"
+                else:
+                    ex3 = ""
+                s1 = f"PARAMETER {p['param']} {p['temp_start']:.2f} {ex1}*T"
+                s2 = f"    {ex2}"
+                s3 = f"    {ex3}; {p['temp_end']:.2f} {p['is_continued']:1s}"
+                lines.extend([s1, s2, f"{s3} !"])
             else:
-                ex1 = parts[0]
-                ex2 = ""
-            if "*T**3" in ex2:
-                ex2, ex3 = ex2.split("*T**3", 1)
-                ex2 += "*T**3"
-            else:
-                ex3 = ""
-            s1 = f"PARAMETER {p['param']} {p['temp_start']:.2f} {ex1}*T"
-            s2 = f"    {ex2}"
-            s3 = f"    {ex3}; {p['temp_end']:.2f} {p['is_continued']:1s}"
-            lines.extend([s1, s2, f"{s3} !"])
+                # Constant expression (e.g. etot E0 + SER ref)
+                lines.append(
+                    f"PARAMETER {p['param']} {p['temp_start']:.2f} {expr}; "
+                    f"{p['temp_end']:.2f} {p['is_continued']:1s} !"
+                )
 
         lines.extend(["$ PHASE AND PARAMETER DATA END !", ""])
         return lines
