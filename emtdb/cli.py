@@ -4,6 +4,7 @@ EM-TDB - Command-line interface for parsing and managing thermodynamic database 
 
 import sys
 import json
+import os
 import logging
 import argparse
 import traceback
@@ -13,6 +14,7 @@ from emtdb.tdb import ThermoDBI
 from emtdb.tdb import TDBManager
 from emtdb.gibbsfit import GTFitter
 from emtdb.etotfit import ETotFitter
+from emtdb.sftpfit import SFTPFit, load_sftp_config
     
 from emtdb.config import VERSION, DB_CHOICES, PHASE_METRICS, DATA_TYPES
 
@@ -195,6 +197,108 @@ def cmd_etot(args: argparse.Namespace) -> int:
     except Exception as e:
         log.error(traceback.format_exc())
         log.error(f"Failed to process {data_dir}: {e}")
+        return 1
+
+
+def cmd_sftp(args: argparse.Namespace) -> int:
+    """Download data via SFTP, fit, and export TDB."""
+    try:
+        # 1. Resolve targets
+        if args.config:
+            cfg = load_sftp_config(args.config)
+            targets = cfg.get("targets", [])
+            tdb_name = args.tdb_name or cfg.get("tdb_name", "sftp_fit")
+            output = args.output or cfg.get("output", "")
+            local_dir_base = args.local_dir or cfg.get("local_dir")
+        else:
+            password = args.password or os.environ.get("SFTP_PASSWORD")
+            key_file = args.key_file or os.environ.get("SFTP_KEY_FILE")
+            if not args.host or not args.username or not args.remote_dir:
+                log.error(
+                    "Without --config, you must provide --host, --username, "
+                    "and --remote-dir"
+                )
+                return 1
+            targets = [
+                {
+                    "host": args.host,
+                    "port": args.port,
+                    "username": args.username,
+                    "password": password,
+                    "key_filename": key_file,
+                    "remote_dir": args.remote_dir,
+                    "data_type": args.data_type,
+                }
+            ]
+            tdb_name = args.tdb_name or "sftp_fit"
+            output = args.output or ""
+            local_dir_base = args.local_dir or None
+
+        # 2. Init DB & fitter
+        db_path = args.db or ":memory:"
+        tdb_mgr = TDBManager(ThermoDBI(db_path))
+        fitter = SFTPFit(PHASE_METRICS)
+
+        # 3. Process each target
+        all_results = []
+        for target in targets:
+            tgt_local = Path(local_dir_base, target["host"]) if local_dir_base else None
+            log.info(
+                "Processing SFTP target %s@%s:%s",
+                target["username"], target["host"], target["remote_dir"],
+            )
+            results = fitter.process_sftp(
+                remote_dir=target["remote_dir"],
+                data_type=target.get("data_type", args.data_type),
+                host=target["host"],
+                port=target.get("port", 22),
+                username=target["username"],
+                password=target.get("password"),
+                key_filename=target.get("key_filename"),
+                local_dir=tgt_local,
+            )
+            all_results.extend(results)
+
+        log.info("Processed %d fits from %d target(s)", len(all_results), len(targets))
+
+        # 4. Plot / export raw results
+        if all_results:
+            img_path = Path.cwd() / "sftp_fit_results.png"
+            log.info("Plotting fit results to %s...", img_path)
+            fitter.plot_fits(all_results, img_path)
+
+            if args.output_json:
+                fitter.export_json(all_results, args.output_json)
+            if args.output_csv:
+                fitter.export_csv(all_results, args.output_csv)
+
+            # 5. fit2db → TDB pipeline
+            parsed = fitter.fit2db(all_results, tdb_name)
+
+            log.info("Saving %d functions...", len(parsed.funcs))
+            tdb_mgr.save_functions(parsed.funcs)
+
+            log.info("Importing %d parameters...", len(parsed.params))
+            tdb_mgr.import_tdb(
+                parsed.phases,
+                parsed.params,
+                parsed.tdb,
+                desc=f"fitted from sftp ({len(targets)} target(s))",
+                ver=VERSION,
+            )
+
+            # 6. Export TDB
+            if output:
+                tdb_mgr.export_tdb(tdb_name, output)
+            elif db_path == ":memory:":
+                output = f"{tdb_name}.tdb"
+                tdb_mgr.export_tdb(tdb_name, output)
+                log.info("Exported %s to %s", tdb_name, output)
+
+        return 0
+    except Exception as e:
+        log.error(traceback.format_exc())
+        log.error(f"SFTP fit failed: {e}")
         return 1
 
 
@@ -494,6 +598,106 @@ def create_parser() -> argparse.ArgumentParser:
         help="Output CSV file path for fitted E0/V0/B0 results",
     )
 
+    # SFTP Gibbs Fit ------------------------------------------------
+    p_sftp = subparsers.add_parser(
+        "sftp",
+        help="Fit Gibbs-Temperature data from remote SFTP server",
+        epilog=(
+            "Examples:\n"
+            "  Single server:\n"
+            "    emtdb sftp --host 10.0.0.1 -u user -p pass "
+            "--remote-dir /data EndMembers\n"
+            "  Config file:\n"
+            "    emtdb sftp --config sftp_config.json\n"
+            "  Config file with env var password:\n"
+            "    export SFTP_PASSWORD=secret\n"
+            "    emtdb sftp --config sftp_config.json\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_sftp.add_argument(
+        "--config", "-c",
+        type=str,
+        default="",
+        help="Path to JSON config file (if given, overrides per-target args)",
+    )
+    p_sftp.add_argument(
+        "--host",
+        type=str,
+        default="",
+        help="SFTP server hostname/IP",
+    )
+    p_sftp.add_argument(
+        "--port",
+        type=int,
+        default=22,
+        help="SFTP server port",
+    )
+    p_sftp.add_argument(
+        "--username", "-u",
+        type=str,
+        default="",
+        help="SFTP username",
+    )
+    p_sftp.add_argument(
+        "--password", "-p",
+        type=str,
+        default="",
+        help="SFTP password (falls back to SFTP_PASSWORD env var)",
+    )
+    p_sftp.add_argument(
+        "--key-file",
+        type=str,
+        default="",
+        help="SSH private key path (falls back to SFTP_KEY_FILE env var)",
+    )
+    p_sftp.add_argument(
+        "--remote-dir", "-r",
+        type=str,
+        default="",
+        help="Remote data directory path",
+    )
+    p_sftp.add_argument(
+        "--data-type", "-t",
+        choices=DATA_TYPES,
+        default="dat",
+        help="Data file type to download",
+    )
+    p_sftp.add_argument(
+        "--local-dir", "-l",
+        type=str,
+        default="",
+        help="Local download directory (default: temporary directory)",
+    )
+    p_sftp.add_argument(
+        "--db",
+        default="",
+        help="Optional database path (default: in-memory)",
+    )
+    p_sftp.add_argument(
+        "--tdb-name", "-n",
+        default="",
+        help="Logical TDB name (default: 'sftp_fit')",
+    )
+    p_sftp.add_argument(
+        "--output", "-o",
+        type=str,
+        default="",
+        help="Output TDB file path (default: {tdb-name}.tdb)",
+    )
+    p_sftp.add_argument(
+        "--output-json",
+        type=str,
+        default="",
+        help="Output JSON file path for fit results",
+    )
+    p_sftp.add_argument(
+        "--output-csv",
+        type=str,
+        default="",
+        help="Output CSV file path for fit results",
+    )
+
     # Subset ------------------------------------------------
     p_subset = subparsers.add_parser(
         "subset",
@@ -638,6 +842,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_delete.set_defaults(func=cmd_delete)
     p_fit.set_defaults(func=cmd_fit)
     p_etot.set_defaults(func=cmd_etot)
+    p_sftp.set_defaults(func=cmd_sftp)
     p_subset.set_defaults(func=cmd_subset)
 
     return parser

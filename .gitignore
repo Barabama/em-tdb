@@ -43,3 +43,6 @@ ref*
 output
 *test*
 target
+
+# SFTP config (contains credentials)
+sftp_config*.json
