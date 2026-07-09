@@ -39,6 +39,7 @@ ref*
 *temp*
 *tmp*
 *.tmp
-*.json
+
 output
 *test*
+target

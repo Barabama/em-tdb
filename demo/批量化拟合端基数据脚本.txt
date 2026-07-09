@@ -1,0 +1,235 @@
+BCC端基吉布斯自由能公式拟合matlab自动化脚本
+
+parentFolder = 'C:\Users\HP\Documents\MATLAB\DFPT' 
+subfolders = dir(parentFolder)
+subfolders = subfolders([subfolders.isdir] & ~ismember({subfolders.name}, {'.', '..'}))
+figure
+for i = 1:length(subfolders)
+    subfolderPath = fullfile(parentFolder, subfolders(i).name)
+    gibbs = dir(fullfile(subfolderPath, 'gibbs-temperature.dat'))
+    gibbspath = fullfile(subfolderPath, 'gibbs-temperature.dat')
+    if exist(gibbspath, 'file') == 2
+       data{i} = readtable(gibbspath)
+       data{i}([1],:) = []
+       fitType = 'A+B*x*log(x)+C*x^2+D*x^3+E*x^(-1)+F*x'
+       x{i} = data{i}.Var1
+       y{i} = data{i}.Var2 *96485/2   %BCC一个晶胞两原子
+       for j = 1:100    %拟合100次，挑取R最高的作为最终结果
+           [fitResult{j},gof{j}] = fit(x{i},y{i},fitType)
+	       rsquare(j) = (gof{j}.rsquare)
+       end
+       [~, bestindex(i)] = max(rsquare)
+       rsquare_value{i} = rsquare
+       rsquare_new{i} = rsquare(bestindex(i))
+       fitResult_new{i} = fitResult{bestindex(i)}
+       gof_new{i} = gof{bestindex(i)}
+       [~, fileName{i}, ~] = fileparts(subfolders(i).name)
+       FitResult = struct('name', fileName, 'FitResult', fitResult_new, 'Rsquare', rsquare_new, 'Gof', gof_new)
+	   subplot(4, 4, i)         %4×4的pdf，放16张图，根据需要的端基数修改
+       plot(fitResult_new{i},x{i},y{i})
+	   legend('show')
+	   legend('Location', 'northeast', 'FontSize', 3)
+       title([subfolders(i).name])
+       xlabel('T')
+       ylabel('G')
+       disp(gof_new{i})
+    else
+       disp(['文件 gibbs-temperature.dat 在文件夹 ' subfolders(i).name ' 中未找到，跳过该文件夹。'])
+    end
+end
+exportgraphics(gcf, 'all_fits.pdf', 'ContentType', 'vector')
+fileID = fopen('FitResult.txt', 'w')
+for i = 1:length(FitResult)
+    if ~isempty(FitResult(i).name)
+    fprintf(fileID, '%s\n',FitResult(i).name)
+    fprintf(fileID, 'Equation: y = A+B*x*log(x)+C*x^2+D*x^3+E*x^(-1)+F*x\n')
+    fprintf(fileID, 'coefficients: \n')
+    fprintf(fileID, '   A = %e\n   B = %e\n   C = %e\n   D = %e\n   E = %e\n   F = %e\n', FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F)
+    fprintf(fileID, 'Rsquare: %s\n',FitResult(i).Rsquare)
+    fprintf(fileID, 'Final expression:\n y = %+e%+e*x*log(x)%+e*x^2%+e*x^3%+e*x^(-1)%+e*x\n\n\n', FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F)
+    else 
+	fprintf(fileID, '未找到相应数据\n\n\n')
+	end
+end
+fclose(fileID)
+disp('数据已成功导出到 FitResult.txt 文件')
+filetran = fopen('TDB.txt', 'w')
+for i = 1:length(FitResult)
+    if ~isempty(FitResult(i).name)
+    [name{i}] = FitResult(i).name
+	else
+	[name{i}] = '0'
+	end
+end
+for i = 1:length(name)
+    if contains(name(i), '0')
+	[tokens(i)] = {{{'0'}}}
+	else
+    [tokens(i), ~] = regexp(name(i), 'Thermal-(.+)', 'tokens', 'match')
+	end
+end
+for i = 1:length(tokens)
+    Tokens(i) = {tokens{1,i}{1,1}{1,1}}
+end
+for i = 1:length(Tokens)
+    if contains(Tokens{i}, '0')
+	   fprintf(fileID, '未找到相应数据\n\n')
+    elseif contains(Tokens{i}, 'pure')	
+       prefix = regexp(Tokens{i}, '(.+)-.*', 'tokens')
+	   splitData{i} = prefix{1,1}
+	   upperData{i} = cellfun(@upper, splitData{i}, 'UniformOutput', false)
+	   fprintf(filetran, ' FUNCTION SER%s    1.0 %+E%+E*T*LN(T)\n     %+E*T**2%+E*T**3%+E*T**(-1)%+E*T; 6000  N !\n\n',upperData{1,i}{1,1},FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F)
+    else  
+	   currentStr = Tokens{i}
+       prefix = ''
+       suffix = ''
+       if length(currentStr) == 2
+          prefix = currentStr(1:1)
+          suffix = currentStr(2:2)
+       elseif length(currentStr) == 3
+          for j = 1:length(currentStr)
+              if j > 1 && isstrprop(currentStr(j-1), 'lower') && isstrprop(currentStr(j), 'upper')
+                 prefix = currentStr(1:j-1)
+                 suffix = currentStr(j:end)
+                 break
+          	  elseif j > 1 && isstrprop(currentStr(j-1), 'upper') && isstrprop(currentStr(j), 'upper')
+          	     prefix = currentStr(1:1)
+          	     suffix = currentStr(2:end)
+          	     end
+              end
+          elseif length(currentStr) == 4
+              prefix = currentStr(1:2)
+          	  suffix = currentStr(3:end)
+	   end
+	   splitData{i} = {prefix, suffix}
+	   upperData{i} = cellfun(@upper, splitData{i}, 'UniformOutput', false)
+       fprintf(filetran, ' PARAMETER G(BCC,%s:%s;0) 1.0 %+E%+E*T*LN(T)\n     %+E*T**2%+E*T**3%+E*T**(-1)\n     %+E*T-0.5*SER%s#-0.5*SER%s#; 6000 N  !\n\n',upperData{1,i}{1,1},upperData{1,i}{1,2},FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F,upperData{1,i}{1,1},upperData{1,i}{1,2})  	   
+       fprintf(filetran, ' PARAMETER G(BCC,%s:%s;0) 1.0 %+E%+E*T*LN(T)\n     %+E*T**2%+E*T**3%+E*T**(-1)\n     %+E*T-0.5*SER%s#-0.5*SER%s#; 6000 N  !\n\n',upperData{1,i}{1,2},upperData{1,i}{1,1},FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F,upperData{1,i}{1,2},upperData{1,i}{1,1})  	   
+	end	
+end
+for i = 1:length(upperData)
+    disp(upperData{i})
+end
+fclose(filetran)
+disp('热力学端基数据已成功转化到 TDB.txt 文件')
+
+
+
+
+
+FCC端基吉布斯自由能公式拟合matlab自动化脚本
+
+
+parentFolder = 'D:\Tencent Files\2464265612\2464265612\FileRecv\QHA' 
+subfolders = dir(parentFolder)
+subfolders = subfolders([subfolders.isdir] & ~ismember({subfolders.name}, {'.', '..'}))
+figure
+for i = 1:length(subfolders)
+    subfolderPath = fullfile(parentFolder, subfolders(i).name)
+    gibbs = dir(fullfile(subfolderPath, 'gibbs-temperature.dat'))
+    gibbspath = fullfile(subfolderPath, 'gibbs-temperature.dat')
+    if exist(gibbspath, 'file') == 2
+       data{i} = readtable(gibbspath)
+       data{i}([1],:) = []
+       fitType = 'A+B*x*log(x)+C*x^2+D*x^3+E*x^(-1)+F*x'
+       x{i} = data{i}.Var1
+       y{i} = data{i}.Var2 *96485/4
+       for j = 1:100
+           [fitResult{j},gof{j}] = fit(x{i},y{i},fitType)
+	       rsquare(j) = (gof{j}.rsquare)
+       end
+       [~, bestindex(i)] = max(rsquare)
+       rsquare_value{i} = rsquare
+       rsquare_new{i} = rsquare(bestindex(i))
+       fitResult_new{i} = fitResult{bestindex(i)}
+       gof_new{i} = gof{bestindex(i)}
+       [~, fileName{i}, ~] = fileparts(subfolders(i).name)
+       FitResult = struct('name', fileName, 'FitResult', fitResult_new, 'Rsquare', rsquare_new, 'Gof', gof_new)
+	   subplot(6, 6, i)
+       plot(fitResult_new{i},x{i},y{i})
+	   legend('show')
+	   legend('Location', 'northeast', 'FontSize', 3)
+       title([subfolders(i).name])
+       xlabel('T')
+       ylabel('G')
+       disp(gof_new{i})
+    else
+       disp(['文件 gibbs-temperature.dat 在文件夹 ' subfolders(i).name ' 中未找到，跳过该文件夹。'])
+    end
+end
+exportgraphics(gcf, 'all_fits.pdf', 'ContentType', 'vector')
+fileID = fopen('FitResult.txt', 'w')
+for i = 1:length(FitResult)
+    if ~isempty(FitResult(i).name)
+    fprintf(fileID, '%s\n',FitResult(i).name)
+    fprintf(fileID, 'Equation: y = A+B*x*log(x)+C*x^2+D*x^3+E*x^(-1)+F*x\n')
+    fprintf(fileID, 'coefficients: \n')
+    fprintf(fileID, '   A = %e\n   B = %e\n   C = %e\n   D = %e\n   E = %e\n   F = %e\n', FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F)
+    fprintf(fileID, 'Rsquare: %s\n',FitResult(i).Rsquare)
+    fprintf(fileID, 'Final expression:\n y = %+e%+e*x*log(x)%+e*x^2%+e*x^3%+e*x^(-1)%+e*x\n\n\n', FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F)
+    else 
+	fprintf(fileID, '未找到相应数据\n\n\n')
+	end
+end
+fclose(fileID)
+disp('数据已成功导出到 FitResult.txt 文件')
+filetran = fopen('TDB.txt', 'w')
+for i = 1:length(FitResult)
+    if ~isempty(FitResult(i).name)
+    [name{i}] = FitResult(i).name
+	else
+	[name{i}] = '0'
+	end
+end
+for i = 1:length(name)
+    if contains(name(i), '0')
+	[tokens(i)] = {{{'0'}}}
+	else
+    [tokens(i), ~] = regexp(name(i), 'QHA-(.+)', 'tokens', 'match')
+	end
+end
+for i = 1:length(tokens)
+    Tokens(i) = {tokens{1,i}{1,1}{1,1}}
+end
+for i = 1:length(Tokens)
+    if contains(Tokens{i}, '0')
+	   fprintf(fileID, '未找到相应数据\n\n')
+    elseif contains(Tokens{i}, 'pure')	
+       prefix = regexp(Tokens{i}, '(.+)-.*', 'tokens')
+	   splitData{i} = prefix{1,1}
+	   upperData{i} = cellfun(@upper, splitData{i}, 'UniformOutput', false)
+	   fprintf(filetran, ' FUNCTION SER%s    1.0 %+E%+E*T*LN(T)\n     %+E*T**2%+E*T**3%+E*T**(-1)%+E*T; 6000  N !\n\n',upperData{1,i}{1,1},FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F)
+    else  
+	   currentStr = Tokens{i}
+       prefix = ''
+       suffix = ''
+       if length(currentStr) == 2
+          prefix = currentStr(1:1)
+          suffix = currentStr(2:2)
+       elseif length(currentStr) == 3
+          for j = 1:length(currentStr)
+              if j > 1 && isstrprop(currentStr(j-1), 'lower') && isstrprop(currentStr(j), 'upper')
+                 prefix = currentStr(1:j-1)
+                 suffix = currentStr(j:end)
+                 break
+          	  elseif j > 1 && isstrprop(currentStr(j-1), 'upper') && isstrprop(currentStr(j), 'upper')
+          	     prefix = currentStr(1:1)
+          	     suffix = currentStr(2:end)
+          	     end
+              end
+          elseif length(currentStr) == 4
+              prefix = currentStr(1:2)
+          	  suffix = currentStr(3:end)
+	   end
+	   splitData{i} = {prefix, suffix}
+	   upperData{i} = cellfun(@upper, splitData{i}, 'UniformOutput', false)
+       fprintf(filetran, ' PARAMETER G(FCC,%s:%s;0) 1.0 %+E%+E*T*LN(T)\n     %+E*T**2%+E*T**3%+E*T**(-1)\n     %+E*T-0.25*SER%s#-0.75*SER%s#; 6000 N  !\n\n',upperData{1,i}{1,1},upperData{1,i}{1,2},FitResult(i).FitResult.A, FitResult(i).FitResult.B, FitResult(i).FitResult.C, FitResult(i).FitResult.D, FitResult(i).FitResult.E, FitResult(i).FitResult.F,upperData{1,i}{1,1},upperData{1,i}{1,2})  	   
+    end	
+end
+for i = 1:length(upperData)
+    disp(upperData{i})
+end
+fclose(filetran)
+disp('热力学端基数据已成功转化到 TDB.txt 文件')
+
+

@@ -36,51 +36,46 @@ class TDBComparator:
         self.params1 = {}
         self.params2 = {}
         
+    # Match one term in a TDB addition-chain expression.
+    # Groups: (1) sign  (2) mantissa  (3) exponent  (4) suffix (incl. leading *)
+    _TERM_RE = re.compile(
+        r"([+-]?)"
+        r"(\d+(?:\.\d*)?|\.\d+)"
+        r"((?:[Ee][+-]?\d+)?)"
+        r"((?:\*(?:T(?:\*?(?:LN\(T\)|\*\*(?:2|3|\(-1\))))?|[A-Za-z_][A-Za-z0-9_]*\#)))?"
+    )
+
     def parse_expression(self, line: str) -> str:
-        """Parse TDB expression to Python expression."""
-        digital = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)"
-        pattern_map = [
-            (
-                "A",
-                rf"(?<!\*){digital}(?=\+|\-)",
-                lambda m: f"{float(m.group(1)):+E}",
-            ),
-            (
-                "B",
-                rf"{digital}\*T(?!\*)",
-                lambda m: f"{float(m.group(1)):+E}*T",
-            ),
-            (
-                "C",
-                rf"{digital}\*T\*LN\(T\)",
-                lambda m: f"{float(m.group(1)):+E}*T*np.log(T)",
-            ),
-            (
-                "D",
-                rf"{digital}\*T\*\*2",
-                lambda m: f"{float(m.group(1)):+E}*T**2",
-            ),
-            (
-                "E",
-                rf"{digital}\*T\*\*3",
-                lambda m: f"{float(m.group(1)):+E}*T**3",
-            ),
-            (
-                "F",
-                rf"{digital}\*T\*\*\(-1\)",
-                lambda m: f"{float(m.group(1)):+E}*T**(-1)",
-            ),
-            (
-                "X",
-                rf"{digital}\*([^#\+\-][A-Za-z]+#)",
-                lambda m: f"{float(m.group(1))}*{m.group(2)}",
-            ),
-        ]
-        new_line = ""
-        for key, pattern, formatter in pattern_map:
-            for match in re.finditer(pattern, line):
-                new_line += formatter(match)
-        return new_line
+        """Parse TDB expression to Python expression.
+
+        Coefficients are reformatted to scientific notation.
+        Function references (e.g. ``-0.5*GHSERAL#``) keep plain
+        coefficient format.  Term order is preserved exactly.
+        ``LN(T)`` is converted to ``np.log(T)`` for eval compatibility.
+        """
+        parts: list[str] = []
+        for m in self._TERM_RE.finditer(line):
+            sign = m.group(1) or ""
+            mantissa = m.group(2)
+            exponent = m.group(3) or ""
+            suffix = m.group(4) or ""
+            num = float(sign + mantissa + exponent)
+
+            if suffix:
+                # Replace LN(T) → np.log(T) for the compare_evaluate use-case
+                py_suffix = suffix.replace("LN(T)", "np.log(T)")
+                if py_suffix.startswith("*T"):
+                    parts.append(f"{num:+E}{py_suffix}")
+                else:
+                    # Function reference coefficient: keep plain decimal
+                    parts.append(f"{num}{py_suffix}")
+            else:
+                parts.append(f"{num:+E}")
+
+        result = "".join(parts)
+        if result.startswith("+"):
+            result = result[1:]
+        return result
 
     def parse_tdb(self, tdb_path: Path) -> Tuple[Dict[str, TDBFunction], Dict[str, TDBParameter]]:
         """Parse TDB file and extract functions and parameters."""
