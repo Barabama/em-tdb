@@ -1,0 +1,305 @@
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  color: #213547;
+  background-color: #f5f5f5;
+}
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 0.25rem;
+  color: #1a1a2e;
+}
+
+.subtitle {
+  color: #666;
+  font-size: 0.8rem;
+  margin: 0 0 1.25rem;
+}
+
+.controls {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  margin-bottom: 1.25rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.filepath {
+  font-size: 0.8rem;
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 420px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.grid label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #555;
+}
+
+.grid input,
+.grid select {
+  margin-top: 0.25rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+button:hover {
+  background: #f0f0f0;
+}
+
+.run-btn {
+  width: 100%;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  padding: 0.55rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 6px;
+}
+
+.run-btn:hover {
+  background: #1976d2;
+}
+
+.run-btn:disabled {
+  background: #90caf9;
+  cursor: not-allowed;
+}
+
+.error {
+  color: #d32f2f;
+  background: #ffebee;
+  padding: 0.5rem;
+  border-radius: 4px;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.results {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.card {
+  flex: 0 0 280px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.card h3 {
+  margin: 0 0 0.5rem;
+}
+
+.card p {
+  margin: 0.25rem 0;
+}
+
+.card pre {
+  background: #f8f8f8;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.card pre.tdb-line {
+  font-size: 0.65rem;
+  word-break: break-all;
+}
+
+.chart {
+  flex: 1 1 420px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 0.5rem;
+}
+
+/* ── mode toggle ── */
+.mode-toggle {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.mode-btn {
+  padding: 0.4rem 1.2rem;
+  border: none;
+  border-radius: 0;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.mode-btn.active {
+  background: #2196f3;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ── batch mode ── */
+.dataset-count {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #555;
+  margin: 0 0 0.5rem;
+}
+
+.dataset-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 0.25rem 0;
+  margin-bottom: 0.75rem;
+}
+
+.dataset-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dataset-item:hover {
+  background: #f0f4ff;
+}
+
+.dataset-item input[type="checkbox"] {
+  margin: 0;
+}
+
+/* ── batch result details ── */
+.batch-results {
+  margin-top: 1rem;
+}
+
+.batch-results h3 {
+  margin: 0 0 0.75rem;
+}
+
+.result-card {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.result-card summary {
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.result-body {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #eee;
+}
+
+.result-body .card,
+.result-body .chart {
+  flex: 1 1 300px;
+}
+
+/* ── dark mode ── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #eee;
+    background-color: #1e1e1e;
+  }
+  .controls,
+  .card,
+  .chart {
+    background: #2a2a2a;
+  }
+  .grid input,
+  .grid select,
+  button {
+    background: #333;
+    color: #eee;
+    border-color: #555;
+  }
+  .card pre {
+    background: #333;
+  }
+  .mode-btn {
+    background: #333;
+    color: #eee;
+  }
+  .mode-btn.active {
+    background: #1976d2;
+  }
+  .mode-toggle {
+    border-color: #555;
+  }
+  .dataset-list {
+    border-color: #444;
+  }
+  .dataset-item:hover {
+    background: #2a3a5a;
+  }
+  .result-card {
+    background: #2a2a2a;
+    border-color: #444;
+  }
+  .result-body {
+    border-top-color: #444;
+  }
+}

@@ -42,3 +42,7 @@ ref*
 *.json
 output
 *test*
+
+# Rust / Cargo
+target/
+**/target/
