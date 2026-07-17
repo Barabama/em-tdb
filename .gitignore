@@ -30,6 +30,7 @@ Desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+tests/__pycache__/
 
 # data
 data
@@ -43,6 +44,12 @@ ref*
 
 output
 *test*
+!tests/
+!tests/**
+tests/**/__pycache__/
+tests/fits-dat/
+tests/fits-json/
+*.pyc
 target
 
 # SFTP config (contains credentials)
