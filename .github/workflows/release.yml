@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare versions
+        id: ver
+        shell: python
+        run: |
+          import tomllib, json, subprocess, os
+
+          def parse_ver(v):
+              parts = [int(x) for x in v.split(".")[:4]]
+              return tuple(parts + [0] * (4 - len(parts)))
+
+          with open("pyproject.toml", "rb") as f:
+              pyproject_ver = tomllib.load(f)["project"]["version"]
+
+          result = subprocess.run(
+              ["gh", "release", "list", "--limit", "1", "--json", "tagName"],
+              capture_output=True, text=True
+          )
+          if result.returncode == 0 and result.stdout.strip():
+              tag = json.loads(result.stdout)[0]["tagName"]
+              latest_ver = tag.lstrip("v")
+          else:
+              latest_ver = "0.0.0"
+
+          should_release = parse_ver(pyproject_ver) > parse_ver(latest_ver)
+          print(f"pyproject={pyproject_ver}  latest={latest_ver}  release={should_release}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"version={pyproject_ver}\n")
+              f.write(f"should_release={'true' if should_release else 'false'}\n")
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip — no new version
+        if: steps.ver.outputs.should_release != 'true'
+        run: echo "pyproject ${{ steps.ver.outputs.version }} <= latest release, skipping"
+
+      - uses: actions/setup-python@v5
+        if: steps.ver.outputs.should_release == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.ver.outputs.should_release == 'true'
+        run: |
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        if: steps.ver.outputs.should_release == 'true'
+        shell: python
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          import subprocess, os, sys
+          ver = os.environ["VERSION"]
+          name = f"em-tdb-gui_x64_v{ver}"
+          subprocess.run([
+              sys.executable, "-m", "PyInstaller",
+              "demo/tkgui.py",
+              "--onefile",
+              "--noconsole",
+              f"--name={name}",
+          ], check=True)
+
+      - name: Create release
+        if: steps.ver.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ steps.ver.outputs.version }}"
+          exe="em-tdb-gui_x64_v${{ steps.ver.outputs.version }}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            "dist/${exe}.exe"

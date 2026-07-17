@@ -1,6 +1,6 @@
 [project]
 name = "em-tdb"
-version = "0.5.0"
+version = "0.6.0"
 description = "A tool for managing Multi-Principle Element Alloys End-Member Thermodynamic Database files and fitting Phonopy Gibbs-Temperature data."
 authors = [
     { name = "Barabama", email = "barabama@qq.com" },
