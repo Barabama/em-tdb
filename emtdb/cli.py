@@ -2,21 +2,28 @@
 EM-TDB - Command-line interface for parsing and managing thermodynamic database files.
 """
 
-import sys
+from __future__ import annotations
+
 import json
-import os
 import logging
-import argparse
+import os
+import sys
 import traceback
 from pathlib import Path
 
-from emtdb.tdb import ThermoDBI
-from emtdb.tdb import TDBManager
-from emtdb.gibbsfit import GTFitter
-from emtdb.etotfit import ETotFitter
+from emtdb.config import F_CONST, VERSION, DB_CHOICES, DATA_TYPES, PHASE_METRICS
+from emtdb.fitters import (
+    Bm3Fitter,
+    FitResult,
+    expand_results,
+    format_tdb_etser,
+    format_tdb_param_with_etser,
+    normalize_metrics,
+    parse_folder_name,
+    write_tdb_file,
+)
 from emtdb.sftpfit import SFTPFit, load_sftp_config
-    
-from emtdb.config import VERSION, DB_CHOICES, PHASE_METRICS, DATA_TYPES
+from emtdb.tdb import TDBManager, ThermoDBI
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +32,16 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+# ── helpers ─────────────────────────────────────────────────────────────
+
+def _find_ve_dat(folder: Path) -> Path | None:
+    """Find the deepest *v-e.dat* under *folder*."""
+    files = sorted(folder.rglob("*v-e.dat"))
+    return files[-1] if files else None
+
+
+# ── parse / import / export (database layer) ───────────────────────────
 
 def cmd_parse(args: argparse.Namespace) -> int:
     tdb_file = args.tdb_file
@@ -98,10 +115,68 @@ def cmd_export(args: argparse.Namespace) -> int:
         tdb_mgr.db.close()
 
 
-def cmd_fit(args: argparse.Namespace) -> int:
+def cmd_subset(args: argparse.Namespace) -> int:
+    """Extract a TDB subset containing only specified elements."""
+    tdb_file = Path(args.tdb_file)
+    tdb_name = args.tdb_name or tdb_file.stem
+    output = args.output or f"{tdb_name}-subset.tdb"
     db_path = args.db or ":memory:"
-    data_dir = args.data_dir
-    data_dir = Path(data_dir) if isinstance(data_dir, str) else data_dir
+    try:
+        tdb_mgr = TDBManager(ThermoDBI(":memory:"))
+        parsed = tdb_mgr.parse_tdb(tdb_file, tdb_name)
+        log.info(
+            f"Parsed {tdb_file}: "
+            f"{len(parsed.elems)} elements, {len(parsed.funcs)} functions, "
+            f"{len(parsed.phases)} phases, {len(parsed.params)} parameters"
+        )
+
+        from emtdb.tdb.tdbmgr import filter_parsed_data
+
+        elements = set(args.elem)
+        filtered = filter_parsed_data(parsed, elements)
+        log.info(
+            f"Filtered to {len(filtered.elems)} elements, {len(filtered.funcs)} functions, "
+            f"{len(filtered.phases)} phases, {len(filtered.params)} parameters"
+        )
+
+        if not filtered.params:
+            log.error("No parameters match the specified elements")
+            return 1
+
+        # Import to DB then export
+        if db_path != ":memory:":
+            tdb_mgr.db.close()
+            import os
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            tdb_mgr = TDBManager(ThermoDBI(db_path))
+
+        tdb_mgr.save_elements(filtered.elems)
+        tdb_mgr.save_functions(filtered.funcs)
+        tdb_mgr.import_tdb(
+            filtered.phases, filtered.params, tdb_name,
+            desc=f"subset from {tdb_file.name}",
+            ver="1.0",
+        )
+        tdb_mgr.export_tdb(tdb_name, output)
+        log.info(f"Exported subset to {output}")
+        return 0
+    except Exception as e:
+        log.error(traceback.format_exc())
+        log.error(f"Error creating subset: {e}")
+        return 1
+    finally:
+        tdb_mgr.db.close()
+
+
+# ── fitting ─────────────────────────────────────────────────────────────
+
+def cmd_fit(args: argparse.Namespace) -> int:
+    """Fit Gibbs-temperature data (legacy path using GTFitter)."""
+    from emtdb.gibbsfit import GTFitter
+
+    db_path = args.db or ":memory:"
+    data_dir = Path(args.data_dir)
     data_type = args.data_type
     tdb_name = args.tdb_name or str(data_dir.stem)
     try:
@@ -135,7 +210,6 @@ def cmd_fit(args: argparse.Namespace) -> int:
         )
         log.info(f"Fitted {tdb_name} from {data_dir} and imported")
 
-        # Export TDB if in memory
         if db_path == ":memory:":
             output = f"{tdb_name}.tdb"
             tdb_mgr.export_tdb(tdb_name, output)
@@ -151,54 +225,139 @@ def cmd_fit(args: argparse.Namespace) -> int:
 
 
 def cmd_etot(args: argparse.Namespace) -> int:
-    """Fit DFT static energies (E0) from v-e.dat → TDB."""
+    """Fit DFT static energies (E0) from v-e.dat files using Bm3Fitter."""
     data_dir = Path(args.data_dir)
     tdb_name = args.tdb_name or data_dir.stem
-    try:
-        fitter = ETotFitter(PHASE_METRICS)
-        results = fitter.process_folders(data_dir)
-        log.info(f"Processed {len(results)} end-members")
 
+    try:
+        # ── scan & fit ──
+        all_results: list[FitResult] = []
+        for subdir in sorted(data_dir.iterdir()):
+            if not subdir.is_dir():
+                continue
+
+            parsed = parse_folder_name(subdir.name)
+            if parsed is None:
+                log.warning("Skipping %s: cannot parse folder name", subdir.name)
+                continue
+
+            phase, elems, atom_num = parsed
+            ve_path = _find_ve_dat(subdir)
+            if ve_path is None:
+                log.warning("Skipping %s: no v-e.dat found", subdir.name)
+                continue
+
+            metrics_raw = list(PHASE_METRICS.get(phase, (1,)))
+            metrics = normalize_metrics(metrics_raw)
+
+            try:
+                result = Bm3Fitter(max_trials=30).fit_one(
+                    str(ve_path), subdir.name, phase, elems, metrics, atom_num,
+                )
+            except Exception as e:
+                log.warning("Skipping %s: %s", subdir.name, e)
+                continue
+            for expanded in expand_results(result):
+                # Regenerate tdb_line — expand_results copies the original,
+                # but swapped results have a different element order.
+                e0_j = expanded.params[0] * F_CONST / expanded.atom_num
+                if expanded.phase.upper() == "SER":
+                    expanded.tdb_line = format_tdb_etser(expanded.elements[0], e0_j)
+                else:
+                    expanded.tdb_line = format_tdb_param_with_etser(
+                        expanded.phase, expanded.elements, expanded.metrics, e0_j,
+                    )
+                all_results.append(expanded)
+
+        log.info("Fitted %d end-member(s)", len(all_results))
+
+        # ── export raw results (JSON / CSV) ──
         if args.output_json:
-            fitter.export_json(results, args.output_json)
+            _export_etot_json(all_results, args.output_json)
 
         if args.output_csv:
-            fitter.export_csv(results, args.output_csv)
+            _export_etot_csv(all_results, args.output_csv)
 
-        parsed = fitter.results_to_parsed(results, tdb_name)
-        log.info(f"Converted: {len(parsed.funcs)} functions, "
-                 f"{len(parsed.phases)} phases, {len(parsed.params)} parameters")
+        # ── write TDB file (needed for DB import) ──
+        output_path = args.output or f"{tdb_name}.tdb"
+        write_tdb_file(output_path, all_results, description=f"from {data_dir}")
+        if args.output:
+            log.info("Exported TDB to %s", output_path)
 
-        # Import into DB (in-memory unless --db given)
+        # ── import into DB ──
         db_path = args.db or ":memory:"
         tdb_mgr = TDBManager(ThermoDBI(db_path))
-
-        if parsed.funcs:
-            tdb_mgr.save_functions(parsed.funcs)
-        if parsed.phases or parsed.params:
-            tdb_mgr.import_tdb(
-                parsed.phases,
-                parsed.params,
-                parsed.tdb,
-                desc=f"fitted from {data_dir}",
-                ver=VERSION,
+        try:
+            parsed = tdb_mgr.parse_tdb(output_path, tdb_name)
+            if parsed.funcs:
+                tdb_mgr.save_functions(parsed.funcs)
+            if parsed.phases or parsed.params:
+                tdb_mgr.import_tdb(
+                    parsed.phases,
+                    parsed.params,
+                    parsed.tdb,
+                    desc=f"fitted from {data_dir}",
+                    ver=VERSION,
+                )
+            log.info(
+                "Imported %d function(s), %d phase(s), %d parameter(s) into DB",
+                len(parsed.funcs), len(parsed.phases), len(parsed.params),
             )
-
-        # Export TDB file
-        if args.output:
-            tdb_mgr.export_tdb(tdb_name, args.output)
-            log.info("Exported TDB to %s", args.output)
-        elif db_path == ":memory:":
-            output = f"{tdb_name}.tdb"
-            tdb_mgr.export_tdb(tdb_name, output)
-            log.info("Exported TDB to %s", output)
+        finally:
+            tdb_mgr.db.close()
 
         return 0
+
     except Exception as e:
         log.error(traceback.format_exc())
         log.error(f"Failed to process {data_dir}: {e}")
         return 1
 
+
+def _export_etot_json(results: list[FitResult], path: str) -> None:
+    """Export BM3 fit results as JSON."""
+    rows = []
+    for r in results:
+        e0, v0, b0, b1 = r.params
+        rows.append({
+            "name": r.name,
+            "phase": r.phase,
+            "elements": r.elements,
+            "E0_eV": e0,
+            "V0_Ang3": v0,
+            "B0_GPa": b0,
+            "B1": b1,
+            "R2": r.r2,
+            "n_points": len(r.x_data),
+        })
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+
+def _export_etot_csv(results: list[FitResult], path: str) -> None:
+    """Export BM3 fit results as CSV."""
+    import csv
+    fieldnames = ["name", "phase", "elements", "E0_eV", "V0_Ang3",
+                  "B0_GPa", "B1", "R2", "n_points"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in results:
+            e0, v0, b0, b1 = r.params
+            writer.writerow({
+                "name": r.name,
+                "phase": r.phase,
+                "elements": ":".join(r.elements),
+                "E0_eV": f"{e0:.6f}",
+                "V0_Ang3": f"{v0:.2f}",
+                "B0_GPa": f"{b0:.1f}",
+                "B1": f"{b1:.2f}",
+                "R2": f"{r.r2:.6f}",
+                "n_points": str(len(r.x_data)),
+            })
+
+
+# ── SFTP ────────────────────────────────────────────────────────────────
 
 def cmd_sftp(args: argparse.Namespace) -> int:
     """Download data via SFTP, fit, and export TDB."""
@@ -235,6 +394,8 @@ def cmd_sftp(args: argparse.Namespace) -> int:
             local_dir_base = args.local_dir or None
 
         # 2. Init DB & fitter
+        from emtdb.gibbsfit import GTFitter
+
         db_path = args.db or ":memory:"
         tdb_mgr = TDBManager(ThermoDBI(db_path))
         fitter = SFTPFit(PHASE_METRICS)
@@ -302,59 +463,7 @@ def cmd_sftp(args: argparse.Namespace) -> int:
         return 1
 
 
-def cmd_subset(args: argparse.Namespace) -> int:
-    """Extract a TDB subset containing only specified elements."""
-    tdb_file = Path(args.tdb_file)
-    tdb_name = args.tdb_name or tdb_file.stem
-    output = args.output or f"{tdb_name}-subset.tdb"
-    db_path = args.db or ":memory:"
-    try:
-        tdb_mgr = TDBManager(ThermoDBI(":memory:"))
-        parsed = tdb_mgr.parse_tdb(tdb_file, tdb_name)
-        log.info(
-            f"Parsed {tdb_file}: "
-            f"{len(parsed.elems)} elements, {len(parsed.funcs)} functions, "
-            f"{len(parsed.phases)} phases, {len(parsed.params)} parameters"
-        )
-
-        from emtdb.tdb.tdbmgr import filter_parsed_data
-
-        elements = set(args.elem)
-        filtered = filter_parsed_data(parsed, elements)
-        log.info(
-            f"Filtered to {len(filtered.elems)} elements, {len(filtered.funcs)} functions, "
-            f"{len(filtered.phases)} phases, {len(filtered.params)} parameters"
-        )
-
-        if not filtered.params:
-            log.error("No parameters match the specified elements")
-            return 1
-
-        # Import to DB then export
-        if db_path != ":memory:":
-            tdb_mgr.db.close()
-            import os
-            if os.path.exists(db_path):
-                os.remove(db_path)
-            tdb_mgr = TDBManager(ThermoDBI(db_path))
-
-        tdb_mgr.save_elements(filtered.elems)
-        tdb_mgr.save_functions(filtered.funcs)
-        tdb_mgr.import_tdb(
-            filtered.phases, filtered.params, tdb_name,
-            desc=f"subset from {tdb_file.name}",
-            ver="1.0",
-        )
-        tdb_mgr.export_tdb(tdb_name, output)
-        log.info(f"Exported subset to {output}")
-        return 0
-    except Exception as e:
-        log.error(traceback.format_exc())
-        log.error(f"Error creating subset: {e}")
-        return 1
-    finally:
-        tdb_mgr.db.close()
-
+# ── DB queries ──────────────────────────────────────────────────────────
 
 def cmd_list(args: argparse.Namespace) -> int:
     db_path = args.db or ":memory:"
@@ -418,6 +527,8 @@ def cmd_delete(args: argparse.Namespace) -> int:
         db.close()
 
 
+# ── parser ──────────────────────────────────────────────────────────────
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="CLI for TDB management",
@@ -431,172 +542,54 @@ def create_parser() -> argparse.ArgumentParser:
         "parse",
         help="Parse TDB file to structured format",
     )
-    p_parse.add_argument(
-        "--tdb-file",
-        "-f",
-        type=str,
-        required=True,
-        help="TDB file path",
-    )
-    p_parse.add_argument(
-        "--tdb-name",
-        "-n",
-        type=str,
-        default="",
-        help="Optional logical tdb name in DB (default: filename)",
-    )
+    p_parse.add_argument("--tdb-file", "-f", type=str, required=True, help="TDB file path")
+    p_parse.add_argument("--tdb-name", "-n", type=str, default="",
+                         help="Optional logical tdb name in DB (default: filename)")
 
     # Import ------------------------------------------------
-    p_import = subparsers.add_parser(
-        "import",
-        help="Import TDB file into database",
-    )
-    p_import.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_import.add_argument(
-        "--tdb-file",
-        "-f",
-        type=str,
-        required=True,
-        help="TDB file path",
-    )
-    p_import.add_argument(
-        "--typed",
-        "-t",
-        choices=DB_CHOICES,
-        default="",
-        help="Type of entry to import (default: all)",
-    )
-    p_import.add_argument(
-        "--tdb-name",
-        "-n",
-        default="",
-        help="Optional logical tdb name in DB (default: filename)",
-    )
-    p_import.add_argument(
-        "--desc",
-        "-d",
-        default="",
-        help="Optional description of the tdb",
-    )
-    p_import.add_argument(
-        "--ver",
-        "-v",
-        default="",
-        help="Optional version of the tdb",
-    )
+    p_import = subparsers.add_parser("import", help="Import TDB file into database")
+    p_import.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_import.add_argument("--tdb-file", "-f", type=str, required=True, help="TDB file path")
+    p_import.add_argument("--typed", "-t", choices=DB_CHOICES, default="",
+                          help="Type of entry to import (default: all)")
+    p_import.add_argument("--tdb-name", "-n", default="",
+                          help="Optional logical tdb name in DB (default: filename)")
+    p_import.add_argument("--desc", "-d", default="", help="Optional description of the tdb")
+    p_import.add_argument("--ver", "-v", default="", help="Optional version of the tdb")
 
     # Export ------------------------------------------------
-    p_export = subparsers.add_parser(
-        "export",
-        help="Export TDB from database to file",
-    )
-    p_export.add_argument(
-        "--db",
-        type=str,
-        required=True,
-        help="Database path",
-    )
-    p_export.add_argument(
-        "--output",
-        "-o",
-        type=str,
-        required=True,
-        help="Output TDB file path",
-    )
-    p_export.add_argument(
-        "--tdb-name",
-        "-n",
-        type=str,
-        required=True,
-        help="Logical tdb name in DB",
-    )
+    p_export = subparsers.add_parser("export", help="Export TDB from database to file")
+    p_export.add_argument("--db", type=str, required=True, help="Database path")
+    p_export.add_argument("--output", "-o", type=str, required=True, help="Output TDB file path")
+    p_export.add_argument("--tdb-name", "-n", type=str, required=True,
+                          help="Logical tdb name in DB")
 
     # Fit Gibbs ------------------------------------------------
-    p_fit = subparsers.add_parser(
-        "fit",
-        help="Fit Gibbs-Temperature data from Phonopy output",
-    )
-    p_fit.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_fit.add_argument(
-        "--data-dir",
-        "-d",
-        required=True,
-        help="Directory containing data",
-    )
-    p_fit.add_argument(
-        "--data_type",
-        "-t",
-        choices=DATA_TYPES,
-        default="dat",
-        help="Data file type",
-    )
-    p_fit.add_argument(
-        "--tdb-name",
-        "-n",
-        default="",
-        help="Optional logical tdb name in DB (default: data_dir name)",
-    )
-    p_fit.add_argument(
-        "--output-json",
-        type=str,
-        default="",
-        help="Output JSON file path for fit results (includes R², params A-F, raw data)",
-    )
-    p_fit.add_argument(
-        "--output-csv",
-        type=str,
-        default="",
-        help="Output CSV file path for fit results (flat columns: name/phase/elements/r2/A/B/C/D/E/F)",
-    )
+    p_fit = subparsers.add_parser("fit", help="Fit Gibbs-Temperature data from Phonopy output")
+    p_fit.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_fit.add_argument("--data-dir", "-d", required=True, help="Directory containing data")
+    p_fit.add_argument("--data_type", "-t", choices=DATA_TYPES, default="dat",
+                       help="Data file type")
+    p_fit.add_argument("--tdb-name", "-n", default="",
+                       help="Optional logical tdb name in DB (default: data_dir name)")
+    p_fit.add_argument("--output-json", type=str, default="",
+                       help="Output JSON file path for fit results")
+    p_fit.add_argument("--output-csv", type=str, default="",
+                       help="Output CSV file path for fit results")
 
     # Fit E0 (etot) ------------------------------------------------
-    p_etot = subparsers.add_parser(
-        "etot",
-        help="Fit DFT static energies (E0) from v-e.dat files",
-    )
-    p_etot.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_etot.add_argument(
-        "--data-dir",
-        "-d",
-        required=True,
-        help="Directory containing end-member folders",
-    )
-    p_etot.add_argument(
-        "--tdb-name",
-        "-n",
-        default="",
-        help="Logical TDB name in DB (default: data_dir name)",
-    )
-    p_etot.add_argument(
-        "--output", "-o",
-        type=str,
-        default="",
-        help="Output TDB file path (default: {tdb-name}.tdb)",
-    )
-    p_etot.add_argument(
-        "--output-json",
-        type=str,
-        default="",
-        help="Output JSON file path for fitted E0/V0/B0 results",
-    )
-    p_etot.add_argument(
-        "--output-csv",
-        type=str,
-        default="",
-        help="Output CSV file path for fitted E0/V0/B0 results",
-    )
+    p_etot = subparsers.add_parser("etot", help="Fit DFT static energies (E0) from v-e.dat files")
+    p_etot.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_etot.add_argument("--data-dir", "-d", required=True,
+                        help="Directory containing end-member folders")
+    p_etot.add_argument("--tdb-name", "-n", default="",
+                        help="Logical TDB name in DB (default: data_dir name)")
+    p_etot.add_argument("--output", "-o", type=str, default="",
+                        help="Output TDB file path (default: {tdb-name}.tdb)")
+    p_etot.add_argument("--output-json", type=str, default="",
+                        help="Output JSON file path for fitted E0/V0/B0 results")
+    p_etot.add_argument("--output-csv", type=str, default="",
+                        help="Output CSV file path for fitted E0/V0/B0 results")
 
     # SFTP Gibbs Fit ------------------------------------------------
     p_sftp = subparsers.add_parser(
@@ -615,224 +608,67 @@ def create_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_sftp.add_argument(
-        "--config", "-c",
-        type=str,
-        default="",
-        help="Path to JSON config file (if given, overrides per-target args)",
-    )
-    p_sftp.add_argument(
-        "--host",
-        type=str,
-        default="",
-        help="SFTP server hostname/IP",
-    )
-    p_sftp.add_argument(
-        "--port",
-        type=int,
-        default=22,
-        help="SFTP server port",
-    )
-    p_sftp.add_argument(
-        "--username", "-u",
-        type=str,
-        default="",
-        help="SFTP username",
-    )
-    p_sftp.add_argument(
-        "--password", "-p",
-        type=str,
-        default="",
-        help="SFTP password (falls back to SFTP_PASSWORD env var)",
-    )
-    p_sftp.add_argument(
-        "--key-file",
-        type=str,
-        default="",
-        help="SSH private key path (falls back to SFTP_KEY_FILE env var)",
-    )
-    p_sftp.add_argument(
-        "--remote-dir", "-r",
-        type=str,
-        default="",
-        help="Remote data directory path",
-    )
-    p_sftp.add_argument(
-        "--data-type", "-t",
-        choices=DATA_TYPES,
-        default="dat",
-        help="Data file type to download",
-    )
-    p_sftp.add_argument(
-        "--local-dir", "-l",
-        type=str,
-        default="",
-        help="Local download directory (default: temporary directory)",
-    )
-    p_sftp.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_sftp.add_argument(
-        "--tdb-name", "-n",
-        default="",
-        help="Logical TDB name (default: 'sftp_fit')",
-    )
-    p_sftp.add_argument(
-        "--output", "-o",
-        type=str,
-        default="",
-        help="Output TDB file path (default: {tdb-name}.tdb)",
-    )
-    p_sftp.add_argument(
-        "--output-json",
-        type=str,
-        default="",
-        help="Output JSON file path for fit results",
-    )
-    p_sftp.add_argument(
-        "--output-csv",
-        type=str,
-        default="",
-        help="Output CSV file path for fit results",
-    )
+    p_sftp.add_argument("--config", "-c", type=str, default="",
+                        help="Path to JSON config file")
+    p_sftp.add_argument("--host", type=str, default="", help="SFTP server hostname/IP")
+    p_sftp.add_argument("--port", type=int, default=22, help="SFTP server port")
+    p_sftp.add_argument("--username", "-u", type=str, default="", help="SFTP username")
+    p_sftp.add_argument("--password", "-p", type=str, default="",
+                        help="SFTP password (falls back to SFTP_PASSWORD env var)")
+    p_sftp.add_argument("--key-file", type=str, default="",
+                        help="SSH private key path (falls back to SFTP_KEY_FILE env var)")
+    p_sftp.add_argument("--remote-dir", "-r", type=str, default="",
+                        help="Remote data directory path")
+    p_sftp.add_argument("--data-type", "-t", choices=DATA_TYPES, default="dat",
+                        help="Data file type to download")
+    p_sftp.add_argument("--local-dir", "-l", type=str, default="",
+                        help="Local download directory (default: temporary directory)")
+    p_sftp.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_sftp.add_argument("--tdb-name", "-n", default="",
+                        help="Logical TDB name (default: 'sftp_fit')")
+    p_sftp.add_argument("--output", "-o", type=str, default="",
+                        help="Output TDB file path (default: {tdb-name}.tdb)")
+    p_sftp.add_argument("--output-json", type=str, default="",
+                        help="Output JSON file path for fit results")
+    p_sftp.add_argument("--output-csv", type=str, default="",
+                        help="Output CSV file path for fit results")
 
     # Subset ------------------------------------------------
-    p_subset = subparsers.add_parser(
-        "subset",
-        help="Extract TDB subset containing only specified elements",
-    )
-    p_subset.add_argument(
-        "--tdb-file", "-f",
-        type=str,
-        required=True,
-        help="Input TDB file path",
-    )
-    p_subset.add_argument(
-        "--elem", "-e",
-        type=str,
-        nargs="+",
-        required=True,
-        metavar="ELEM",
-        help="Element symbols to keep (e.g. FE CR NI)",
-    )
-    p_subset.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_subset.add_argument(
-        "--tdb-name", "-n",
-        default="",
-        help="Optional logical tdb name (default: input filename)",
-    )
-    p_subset.add_argument(
-        "--output", "-o",
-        type=str,
-        default="",
-        help="Output TDB file path (default: {tdb-name}-subset.tdb)",
-    )
+    p_subset = subparsers.add_parser("subset", help="Extract TDB subset containing only specified elements")
+    p_subset.add_argument("--tdb-file", "-f", type=str, required=True, help="Input TDB file path")
+    p_subset.add_argument("--elem", "-e", type=str, nargs="+", required=True, metavar="ELEM",
+                          help="Element symbols to keep (e.g. FE CR NI)")
+    p_subset.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_subset.add_argument("--tdb-name", "-n", default="",
+                          help="Optional logical tdb name (default: input filename)")
+    p_subset.add_argument("--output", "-o", type=str, default="",
+                          help="Output TDB file path (default: {tdb-name}-subset.tdb)")
 
     # List ------------------------------------------------
-    p_list = subparsers.add_parser(
-        "list",
-        help="List entries in database",
-    )
-    p_list.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_list.add_argument(
-        "--typed",
-        "-t",
-        required=True,
-        choices=DB_CHOICES,
-        help="Entry type to list",
-    )
-    p_list.add_argument(
-        "--like",
-        "-l",
-        action="store_true",
-        default=False,
-        help="Use LIKE in query",
-    )
-    p_list.add_argument(
-        "--elem",
-        default="",
-        help="Filter by element for elements and functions",
-    )
-    p_list.add_argument(
-        "--func",
-        default="",
-        help="Filter by function for functions",
-    )
-    p_list.add_argument(
-        "--phase",
-        default="",
-        help="Filter by phase for phases and parameters",
-    )
-    p_list.add_argument(
-        "--param",
-        default="",
-        help="Filter by parameter for parameters",
-    )
-    p_list.add_argument(
-        "--tdb",
-        default="",
-        help="Filter by tdb for tdbs, phases and parameters",
-    )
+    p_list = subparsers.add_parser("list", help="List entries in database")
+    p_list.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_list.add_argument("--typed", "-t", required=True, choices=DB_CHOICES,
+                        help="Entry type to list")
+    p_list.add_argument("--like", "-l", action="store_true", default=False,
+                        help="Use LIKE in query")
+    p_list.add_argument("--elem", default="", help="Filter by element for elements and functions")
+    p_list.add_argument("--func", default="", help="Filter by function for functions")
+    p_list.add_argument("--phase", default="", help="Filter by phase for phases and parameters")
+    p_list.add_argument("--param", default="", help="Filter by parameter for parameters")
+    p_list.add_argument("--tdb", default="", help="Filter by tdb for tdbs, phases and parameters")
 
     # Delete ------------------------------------------------
-    p_delete = subparsers.add_parser(
-        "delete",
-        help="Delete entry from database",
-    )
-    p_delete.add_argument(
-        "--db",
-        default="",
-        help="Optional database path (default: in-memory)",
-    )
-    p_delete.add_argument(
-        "--typed",
-        "-t",
-        required=True,
-        choices=DB_CHOICES,
-        help="Entry type to delete",
-    )
-    p_delete.add_argument(
-        "--cascade",
-        "-c",
-        action="store_true",
-        default=False,
-        help="Delete dependent entries",
-    )
-    p_delete.add_argument(
-        "--elem",
-        default="",
-        help="Filter by element for elements and functions",
-    )
-    p_delete.add_argument(
-        "--func",
-        default="",
-        help="Filter by function for functions",
-    )
-    p_delete.add_argument(
-        "--phase",
-        default="",
-        help="Filter by phase for phases and parameters",
-    )
-    p_delete.add_argument(
-        "--param",
-        default="",
-        help="Filter by parameter for parameters",
-    )
-    p_delete.add_argument(
-        "--tdb",
-        default="",
-        help="Filter by tdb for tdbs, phases and parameters",
-    )
+    p_delete = subparsers.add_parser("delete", help="Delete entry from database")
+    p_delete.add_argument("--db", default="", help="Optional database path (default: in-memory)")
+    p_delete.add_argument("--typed", "-t", required=True, choices=DB_CHOICES,
+                          help="Entry type to delete")
+    p_delete.add_argument("--cascade", "-c", action="store_true", default=False,
+                          help="Delete dependent entries")
+    p_delete.add_argument("--elem", default="", help="Filter by element for elements and functions")
+    p_delete.add_argument("--func", default="", help="Filter by function for functions")
+    p_delete.add_argument("--phase", default="", help="Filter by phase for phases and parameters")
+    p_delete.add_argument("--param", default="", help="Filter by parameter for parameters")
+    p_delete.add_argument("--tdb", default="", help="Filter by tdb for tdbs, phases and parameters")
 
     # Register handlers
     p_parse.set_defaults(func=cmd_parse)

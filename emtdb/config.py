@@ -20,6 +20,14 @@ PHASE_METRICS = {
 
 DATA_TYPES = ["dat", "json"]
 
+# Physical constants
+F_CONST = 96485  # Faraday constant (C/mol)
+T_MIN = 100  # Minimum temperature for fitting (K)
+T_MAX = 2900  # Maximum temperature for fitting (K)
+
+# BM3 EOS constants
+B0_EV_ANG3_TO_GPA = 160.2189  # eV/Å³ → GPa conversion factor
+
 DEFAULT_ELEMS = """
 ELEMENT VA VACUUM                0.000000E+00 0.000000E+00 0.000000E+00 !
 ELEMENT /- ELECTRON_GAS          0.000000E+00 0.000000E+00 0.000000E+00 !

@@ -412,7 +412,7 @@ class TestEtot:
             import json
             with open(out) as f:
                 data = json.load(f)
-            assert len(data) == 3
+            assert len(data) == 4  # SER-Fe, SER-Cr, BCC-Fe-Cr, BCC-Fe-Cr-ex
             for r in data:
                 assert "E0_eV" in r
                 assert "V0_Ang3" in r
@@ -434,7 +434,7 @@ class TestEtot:
             assert cmd_etot(args) == 0
             lines = out.read_text(encoding="utf-8").strip().splitlines()
             assert lines[0] == "name,phase,elements,E0_eV,V0_Ang3,B0_GPa,B1,R2,n_points"
-            assert len(lines) == 4  # header + 3 data rows
+            assert len(lines) == 5  # header + 4 data rows (SER-Fe, SER-Cr, BCC-Fe-Cr, BCC-Fe-Cr-ex)
 
     def test_etot_invalid_dir_returns_1(self):
         """Non-existent data directory returns exit code 1."""

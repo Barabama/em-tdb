@@ -64,7 +64,7 @@ class QhaData(TypedDict):
     name: str
     structure: dict[str, Any]
     bulk_modulus: float  # DFT E0 GPa
-    volumes: float  # EOS
+    volumes: list[float]  # EOS
     temperatures: list[float]  # T K
     thermal_expansion: list[float]  # K^(-1)
     bulk_modulus_temperature: list[float]  # B(T) GPa
